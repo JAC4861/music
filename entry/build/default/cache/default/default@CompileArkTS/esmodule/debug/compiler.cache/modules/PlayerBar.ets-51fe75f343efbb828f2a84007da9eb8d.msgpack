@@ -1,0 +1,594 @@
+Ôr@Ÿªassertions¤code´customTransformCache¬dependencies¢id¤meta±moduleSideEffects¬originalCode±originalSourcemap«resolvedIds®sourcemapChainµsyntheticNamedExportsµtransformDependencies®transformFiles¨cacheAstÔrAÚ;Kif (!("finalizeConstruction" in ViewPU.prototype)) {
+    Reflect.set(ViewPU.prototype, "finalizeConstruction", () => { });
+}
+import { PLAYER_SONG_KEY, PLAYER_PLAYING_KEY, PLAYER_POSITION_MS_KEY, PLAYER_DURATION_MS_KEY, PLAYERBAR_VISIBLE_KEY } from '../service/PlayerState';
+import { seekTo, togglePlayPause, playPrev, playNext, PLAYER_LOADING_KEY } from '../service/AudioPlayerService';
+import { PlayerBtnLeft, PlayerBtnRight, PlayerBtnBegin, PlayerBtnEnd } from '../common/UI';
+export class PlayerBar extends ViewPU {
+    constructor(parent, params, __localStorage, elmtId = -1, paramsLambda = undefined, extraInfo) {
+        super(parent, __localStorage, elmtId, extraInfo);
+        if (typeof paramsLambda === "function") {
+            this.paramsGenerator_ = paramsLambda;
+        }
+        this.__visible = this.createStorageLink(PLAYERBAR_VISIBLE_KEY, true, "visible");
+        this.__durationMs = this.createStorageLink(PLAYER_DURATION_MS_KEY, 0, "durationMs");
+        this.__isLoading = this.createStorageLink(PLAYER_LOADING_KEY, false, "isLoading");
+        this.__currentSong = this.createStorageLink(PLAYER_SONG_KEY, undefined, "currentSong");
+        this.__isPlaying = this.createStorageLink(PLAYER_PLAYING_KEY, false, "isPlaying");
+        this.__positionMs = this.createStorageLink(PLAYER_POSITION_MS_KEY, 0, "positionMs");
+        this.__callbacks = new SynchedPropertyObjectOneWayPU(params.callbacks, this, "callbacks");
+        this.__dragging = new ObservedPropertySimplePU(false, this, "dragging");
+        this.__dragValue = new ObservedPropertySimplePU(0, this, "dragValue");
+        this.setInitiallyProvidedValue(params);
+        this.finalizeConstruction();
+    }
+    setInitiallyProvidedValue(params) {
+        if (params.callbacks === undefined) {
+            this.__callbacks.set({});
+        }
+        if (params.dragging !== undefined) {
+            this.dragging = params.dragging;
+        }
+        if (params.dragValue !== undefined) {
+            this.dragValue = params.dragValue;
+        }
+    }
+    updateStateVars(params) {
+        this.__callbacks.reset(params.callbacks);
+    }
+    purgeVariableDependenciesOnElmtId(rmElmtId) {
+        this.__visible.purgeDependencyOnElmtId(rmElmtId);
+        this.__durationMs.purgeDependencyOnElmtId(rmElmtId);
+        this.__isLoading.purgeDependencyOnElmtId(rmElmtId);
+        this.__currentSong.purgeDependencyOnElmtId(rmElmtId);
+        this.__isPlaying.purgeDependencyOnElmtId(rmElmtId);
+        this.__positionMs.purgeDependencyOnElmtId(rmElmtId);
+        this.__callbacks.purgeDependencyOnElmtId(rmElmtId);
+        this.__dragging.purgeDependencyOnElmtId(rmElmtId);
+        this.__dragValue.purgeDependencyOnElmtId(rmElmtId);
+    }
+    aboutToBeDeleted() {
+        this.__visible.aboutToBeDeleted();
+        this.__durationMs.aboutToBeDeleted();
+        this.__isLoading.aboutToBeDeleted();
+        this.__currentSong.aboutToBeDeleted();
+        this.__isPlaying.aboutToBeDeleted();
+        this.__positionMs.aboutToBeDeleted();
+        this.__callbacks.aboutToBeDeleted();
+        this.__dragging.aboutToBeDeleted();
+        this.__dragValue.aboutToBeDeleted();
+        SubscriberManager.Get().delete(this.id__());
+        this.aboutToBeDeletedInternal();
+    }
+    get visible() {
+        return this.__visible.get();
+    }
+    set visible(newValue) {
+        this.__visible.set(newValue);
+    }
+    get durationMs() {
+        return this.__durationMs.get();
+    }
+    set durationMs(newValue) {
+        this.__durationMs.set(newValue);
+    }
+    get isLoading() {
+        return this.__isLoading.get();
+    }
+    set isLoading(newValue) {
+        this.__isLoading.set(newValue);
+    }
+    get currentSong() {
+        return this.__currentSong.get();
+    }
+    set currentSong(newValue) {
+        this.__currentSong.set(newValue);
+    }
+    get isPlaying() {
+        return this.__isPlaying.get();
+    }
+    set isPlaying(newValue) {
+        this.__isPlaying.set(newValue);
+    }
+    get positionMs() {
+        return this.__positionMs.get();
+    }
+    set positionMs(newValue) {
+        this.__positionMs.set(newValue);
+    }
+    get callbacks() {
+        return this.__callbacks.get();
+    }
+    set callbacks(newValue) {
+        this.__callbacks.set(newValue);
+    }
+    get dragging() {
+        return this.__dragging.get();
+    }
+    set dragging(newValue) {
+        this.__dragging.set(newValue);
+    }
+    get dragValue() {
+        return this.__dragValue.get();
+    }
+    set dragValue(newValue) {
+        this.__dragValue.set(newValue);
+    }
+    clamp(v, min, max) {
+        return Math.max(min, Math.min(v, max));
+    }
+    fmt(ms) {
+        const sec = Math.floor(ms / 1000);
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${m}:${s < 10 ? '0' + s : s}`;
+    }
+    hideBar() {
+        AppStorage.SetOrCreate(PLAYERBAR_VISIBLE_KEY, true);
+        AppStorage.Set(PLAYERBAR_VISIBLE_KEY, false);
+    }
+    initialRender() {
+        this.observeComponentCreation2((elmtId, isInitialRender) => {
+            Column.create();
+            Column.width('100%');
+        }, Column);
+        this.observeComponentCreation2((elmtId, isInitialRender) => {
+            If.create();
+            if (this.visible && this.currentSong) {
+                this.ifElseBranchUpdateFunction(0, () => {
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Column.create({ space: 8 });
+                        Column.width('100%');
+                        Column.padding({ left: 12, right: 12, bottom: 10 });
+                    }, Column);
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Row.create({ space: 10 });
+                        Row.padding({ left: 12, right: 12, top: 12, bottom: 10 });
+                        Row.backgroundColor(Color.White);
+                        Row.borderRadius(18);
+                        Row.shadow({ radius: 14, color: 0x22000000, offsetX: 0, offsetY: 6 });
+                    }, Row);
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        If.create();
+                        // å°é¢
+                        if (this.currentSong.coverUrl && this.currentSong.coverUrl.length > 0) {
+                            this.ifElseBranchUpdateFunction(0, () => {
+                                this.observeComponentCreation2((elmtId, isInitialRender) => {
+                                    Image.create(this.currentSong.coverUrl);
+                                    Image.width(46);
+                                    Image.height(46);
+                                    Image.borderRadius(12);
+                                    Image.objectFit(ImageFit.Cover);
+                                    Image.shadow({ radius: 10, color: 0x18000000, offsetX: 0, offsetY: 4 });
+                                }, Image);
+                            });
+                        }
+                        else {
+                            this.ifElseBranchUpdateFunction(1, () => {
+                                this.observeComponentCreation2((elmtId, isInitialRender) => {
+                                    Stack.create();
+                                    Stack.shadow({ radius: 10, color: 0x18000000, offsetX: 0, offsetY: 4 });
+                                }, Stack);
+                                this.observeComponentCreation2((elmtId, isInitialRender) => {
+                                    Column.create();
+                                    Column.width(46);
+                                    Column.height(46);
+                                    Column.borderRadius(12);
+                                    Column.backgroundColor(0xEEF2FF);
+                                }, Column);
+                                Column.pop();
+                                this.observeComponentCreation2((elmtId, isInitialRender) => {
+                                    Text.create('â™ª');
+                                    Text.fontSize(18);
+                                    Text.fontColor(0x2955FF);
+                                }, Text);
+                                Text.pop();
+                                Stack.pop();
+                            });
+                        }
+                    }, If);
+                    If.pop();
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+                        Column.create({ space: 4 });
+                        // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+                        Column.layoutWeight(1);
+                        // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+                        Column.alignItems(HorizontalAlign.Start);
+                        // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+                        Column.onClick(() => {
+                            // ç‚¹å‡»å°±éšè— bar
+                            this.hideBar();
+                            // å¦‚æœä½ æƒ³æ”¹æˆâ€œç‚¹å‡»æ‰“å¼€ PlayerPageâ€ï¼Œç”¨ä¸‹é¢è¿™ä¸€å¥æ›¿æ¢ä¸Šé¢ hideBarï¼š
+                            // this.callbacks.onOpenPlayerPage?.();
+                        });
+                    }, Column);
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Text.create(this.currentSong.name);
+                        Text.fontSize(14);
+                        Text.fontWeight(FontWeight.Medium);
+                        Text.fontColor(0x111827);
+                        Text.maxLines(1);
+                        Text.textOverflow({ overflow: TextOverflow.Ellipsis });
+                    }, Text);
+                    Text.pop();
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Text.create(this.currentSong.artistName);
+                        Text.fontSize(12);
+                        Text.fontColor(0x6B7280);
+                        Text.maxLines(1);
+                        Text.textOverflow({ overflow: TextOverflow.Ellipsis });
+                    }, Text);
+                    Text.pop();
+                    // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+                    Column.pop();
+                    // æŒ‰é’®ï¼šå›¾æ ‡èµ„æºç‰ˆ
+                    PlayerBtnLeft.bind(this)(this.isPlayable, () => { playPrev(); });
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        If.create();
+                        if (this.isPlaying) {
+                            this.ifElseBranchUpdateFunction(0, () => {
+                                PlayerBtnEnd.bind(this)(this.isPlayable, () => { togglePlayPause(); });
+                            });
+                        }
+                        else {
+                            this.ifElseBranchUpdateFunction(1, () => {
+                                PlayerBtnBegin.bind(this)(this.isPlayable, () => { togglePlayPause(); });
+                            });
+                        }
+                    }, If);
+                    If.pop();
+                    PlayerBtnRight.bind(this)(this.isPlayable, () => { playNext(); });
+                    Row.pop();
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        // è¿›åº¦æ¡ï¼ˆminiï¼‰
+                        Slider.create({
+                            value: this.dragging ? this.dragValue : this.positionMs,
+                            min: 0,
+                            max: this.durationMs > 0 ? this.durationMs : 1
+                        });
+                        // è¿›åº¦æ¡ï¼ˆminiï¼‰
+                        Slider.height(28);
+                        // è¿›åº¦æ¡ï¼ˆminiï¼‰
+                        Slider.enabled(this.isPlayable && !this.isLoading);
+                        // è¿›åº¦æ¡ï¼ˆminiï¼‰
+                        Slider.onChange((v) => {
+                            if (!this.isPlayable || this.isLoading)
+                                return;
+                            this.dragging = true;
+                            this.dragValue = v;
+                        });
+                        // è¿›åº¦æ¡ï¼ˆminiï¼‰
+                        Slider.onTouch((e) => {
+                            if (!this.isPlayable || this.isLoading)
+                                return;
+                            if (e.type === TouchType.Down) {
+                                this.dragging = true;
+                                this.dragValue = this.positionMs;
+                            }
+                            else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+                                const max = this.durationMs > 0 ? this.durationMs : this.dragValue;
+                                const target = Math.max(0, Math.min(this.dragValue, max));
+                                this.dragging = false;
+                                seekTo(target);
+                            }
+                        });
+                    }, Slider);
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Row.create();
+                        Row.padding({ left: 6, right: 6 });
+                    }, Row);
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Text.create(this.fmt(this.dragging ? this.dragValue : this.positionMs));
+                        Text.fontSize(11);
+                        Text.fontColor(0x6B7280);
+                    }, Text);
+                    Text.pop();
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Blank.create();
+                        Blank.layoutWeight(1);
+                    }, Blank);
+                    Blank.pop();
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Text.create(this.fmt(this.durationMs));
+                        Text.fontSize(11);
+                        Text.fontColor(0x6B7280);
+                    }, Text);
+                    Text.pop();
+                    Row.pop();
+                    Column.pop();
+                });
+            }
+            else {
+                this.ifElseBranchUpdateFunction(1, () => {
+                    this.observeComponentCreation2((elmtId, isInitialRender) => {
+                        Column.create();
+                        Column.width('100%');
+                        Column.height(0);
+                    }, Column);
+                    Column.pop();
+                });
+            }
+        }, If);
+        If.pop();
+        Column.pop();
+    }
+    rerender() {
+        this.updateDirtyElements();
+    }
+}
+//# sourceMappingURL=PlayerBar.js.mapÂ“ÙEF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PlayerState.etsÙLF:\DevEco_sdk\music_classs\entry\src\main\ets\service\AudioPlayerService.etsÙ;F:\DevEco_sdk\music_classs\entry\src\main\ets\common\UI.etsÙAF:\DevEco_sdk\music_classs\entry\src\main\ets\pages\PlayerBar.etsÔrBœªmoduleName±isLocalDependency¯isNodeEntryFile§pkgPath±belongProjectPath§pkgNameªpkgVersion±dependencyPkgInfo¯hostModulesInfo°belongModulePath§checker¬shouldEmitJs¥entryÃÂÙ F:\DevEco_sdk\music_classs\entryºF:\DevEco_sdk\music_classs¥entry¥1.0.0Ô  ‘ÔrC’²hostDependencyName®hostModuleName«./PlayerBar¥entryÙ F:\DevEco_sdk\music_classs\entryÔrDÜ ®¬getNodeCount²getIdentifierCount®getSymbolCount¬getTypeCountµgetInstantiationCountµgetRelationCacheSizes±isUndefinedSymbol±isArgumentsSymbol¯isUnknownSymbol¯getMergedSymbol®getDiagnostics´getGlobalDiagnostics´getRecursionIdentity¶getUnmatchedProperties¹getTypeOfSymbolAtLocation¯getTypeOfSymbolÙ(getSymbolsOfParameterPropertyDeclaration·getDeclaredTypeOfSymbol³getPropertiesOfType±getPropertyOfTypeÙ"getPrivateIdentifierPropertyOfType·getTypeOfPropertyOfType²getIndexInfoOfType³getIndexInfosOfTypeºgetIndexInfosOfIndexSymbol³getSignaturesOfType²getIndexTypeOfType¬getIndexType¬getBaseTypes¸getBaseTypeOfLiteralType®getWidenedType³getTypeFromTypeNode°getParameterTypeÙ$getParameterIdentifierNameAtPosition¸getPromisedTypeOfPromise®getAwaitedType¸getReturnTypeOfSignature®isNullableType¯getNullableType²getNonNullableType²getNonOptionalType°getTypeArguments®typeToTypeNodeÙ$indexInfoToIndexSignatureDeclaration¿signatureToSignatureDeclaration²symbolToEntityName²symbolToExpression¬symbolToNodeÙ!symbolToTypeParameterDeclarations¼symbolToParameterDeclarationºtypeParameterToDeclaration±getSymbolsInScope³getSymbolAtLocation·getIndexInfosAtLocationÙ!getShorthandAssignmentValueSymbolÙ#getExportSpecifierLocalTargetSymbol·getExportSymbolOfSymbol±getTypeAtLocationÙ tryGetTypeAtLocationWithoutCheckºgetTypeOfAssignmentPatternÙ*getPropertySymbolOfDestructuringAssignment±signatureToString¬typeToString®symbolToStringµtypePredicateToString®writeSignature©writeType«writeSymbol²writeTypePredicate¼getAugmentedPropertiesOfType®getRootSymbols²getSymbolOfExpando±getContextualTypeÙ(getContextualTypeForObjectLiteralElementÙ#getContextualTypeForArgumentAtIndexÙ getContextualTypeForJsxAttribute²isContextSensitiveÙ!getTypeOfPropertyOfContextualTypeµgetFullyQualifiedNameÙ#tryGetResolvedSignatureWithoutCheck´getResolvedSignatureÙ/getResolvedSignatureForStringLiteralCompletionsÙ$getResolvedSignatureForSignatureHelpµgetExpandedParameters¹hasEffectiveRestParameterºcontainsArgumentsReference°getConstantValueµisValidPropertyAccessÙ#isValidPropertyAccessForCompletions»getSignatureFromDeclarationºisImplementationOfOverload¹getImmediateAliasedSymbol°getAliasedSymbol¯getEmitResolver²getExportsOfModule¿getExportsAndPropertiesOfModuleÙ forEachExportAndPropertyOfModule¯getSymbolWalker±getAmbientModules¹getJsxIntrinsicTagNamesAt³isOptionalParameter»tryGetMemberInModuleExportsÙ(tryGetMemberInModuleExportsAndProperties´tryFindAmbientModuleÙ(tryFindAmbientModuleWithoutAugmentations¯getApparentType¬getUnionType²isTypeAssignableTo³createAnonymousType¯createSignature¬createSymbol¯createIndexInfoªgetAnyType­getStringType­getNumberType±createPromiseType¯createArrayType¹getElementTypeOfArrayType®getBooleanType¬getFalseType«getTrueType«getVoidType°getUndefinedType«getNullType¯getESSymbolType¬getNeverType¯getOptionalType®getPromiseType²getPromiseLikeType´getAsyncIterableType²isSymbolAccessible«isArrayType«isTupleType¯isArrayLikeTypeÙ#isTypeInvalidDueToUnionDiscriminantºgetExactOptionalProperties¿getAllPossiblePropertiesOfTypesÙ(getSuggestedSymbolForNonexistentPropertyÙ#getSuggestionForNonexistentPropertyÙ,getSuggestedSymbolForNonexistentJSXAttributeÙ&getSuggestedSymbolForNonexistentSymbolÙ!getSuggestionForNonexistentSymbolÙ&getSuggestedSymbolForNonexistentModuleÙ!getSuggestionForNonexistentExportÙ+getSuggestedSymbolForNonexistentClassMember·getBaseConstraintOfType»getDefaultFromTypeParameter«resolveName¯getJsxNamespaceµgetJsxFragmentFactory¸getAccessibleSymbolChain»getTypePredicateOfSignature¹resolveExternalModuleName»resolveExternalModuleSymbol°tryGetThisTypeAt¹getTypeArgumentConstraint¸getSuggestionDiagnostics¸runWithCancellationTokenÙ3getLocalTypeParametersOfClassOrInterfaceOrTypeAlias´isDeclarationVisible´isPropertyAccessible»getTypeOnlyAliasDeclaration¿getMemberOverrideModifierStatusÙ!isTypeParameterPossiblyReferenced²getConstEnumRelate´clearConstEnumRelateµdeleteConstEnumRelateÙ$getTypeArgumentsForResolvedSignatureµgetCheckedSourceFilesÙ"collectHaveTsNoCheckFilesForLinter·clearQualifiedNameCache®isStaticRecord²isStaticSourceFile³createIntrinsicTypeÔ  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  ÃÃÚ¹import type { Song } from '../service/ApiService';
+import {
+  PLAYER_SONG_KEY,
+  PLAYER_PLAYING_KEY,
+  PLAYER_POSITION_MS_KEY,
+  PLAYER_DURATION_MS_KEY,
+  PLAYERBAR_VISIBLE_KEY
+} from '../service/PlayerState';
+import { seekTo, togglePlayPause, playPrev, playNext, PLAYER_LOADING_KEY } from '../service/AudioPlayerService';
+
+
+import { PlayerBtnLeft, PlayerBtnRight, PlayerBtnBegin, PlayerBtnEnd } from '../common/UI';
+
+export interface PlayerBarCallbacks {
+  onOpenPlayerPage?: () => void;
+}
+
+@Component
+export struct PlayerBar {
+  @StorageLink(PLAYERBAR_VISIBLE_KEY) visible: boolean = true;
+  @StorageLink(PLAYER_DURATION_MS_KEY) durationMs: number = 0;
+  @StorageLink(PLAYER_LOADING_KEY) isLoading: boolean = false;
+  @StorageLink(PLAYER_SONG_KEY) currentSong: Song | undefined = undefined;
+  @StorageLink(PLAYER_PLAYING_KEY) isPlaying: boolean = false;
+  @StorageLink(PLAYER_POSITION_MS_KEY) positionMs: number = 0;
+
+  @Prop callbacks: PlayerBarCallbacks = {};
+
+  @State dragging: boolean = false;
+  @State dragValue: number = 0;
+
+  private get isPlayable(): boolean {
+    return !!this.currentSong && !!this.currentSong.url && this.currentSong.url.length > 0;
+  }
+
+  private clamp(v: number, min: number, max: number): number {
+    return Math.max(min, Math.min(v, max));
+  }
+
+  private fmt(ms: number): string {
+    const sec = Math.floor(ms / 1000);
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s < 10 ? '0' + s : s}`;
+  }
+
+  private hideBar() {
+    AppStorage.SetOrCreate<boolean>(PLAYERBAR_VISIBLE_KEY, true);
+    AppStorage.Set<boolean>(PLAYERBAR_VISIBLE_KEY, false);
+  }
+
+  build() {
+    Column() {
+      if (this.visible && this.currentSong) {
+        Column({ space: 8 }) {
+          Row({ space: 10 }) {
+            // å°é¢
+            if (this.currentSong.coverUrl && this.currentSong.coverUrl.length > 0) {
+              Image(this.currentSong.coverUrl)
+                .width(46).height(46).borderRadius(12).objectFit(ImageFit.Cover)
+                .shadow({ radius: 10, color: 0x18000000, offsetX: 0, offsetY: 4 });
+            } else {
+              Stack() {
+                Column() {}.width(46).height(46).borderRadius(12).backgroundColor(0xEEF2FF);
+                Text('â™ª').fontSize(18).fontColor(0x2955FF);
+              }
+              .shadow({ radius: 10, color: 0x18000000, offsetX: 0, offsetY: 4 });
+            }
+
+            // ä¿¡æ¯åŒºï¼šæŒ‰ä½ éœ€æ±‚â€œç‚¹ä¸€ä¸‹å°±æ¶ˆå¤±â€
+            Column({ space: 4 }) {
+              Text(this.currentSong.name)
+                .fontSize(14).fontWeight(FontWeight.Medium).fontColor(0x111827)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+
+              Text(this.currentSong.artistName)
+                .fontSize(12).fontColor(0x6B7280)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+            .onClick(() => {
+              // ç‚¹å‡»å°±éšè— bar
+              this.hideBar();
+
+              // å¦‚æœä½ æƒ³æ”¹æˆâ€œç‚¹å‡»æ‰“å¼€ PlayerPageâ€ï¼Œç”¨ä¸‹é¢è¿™ä¸€å¥æ›¿æ¢ä¸Šé¢ hideBarï¼š
+              // this.callbacks.onOpenPlayerPage?.();
+            });
+
+            // æŒ‰é’®ï¼šå›¾æ ‡èµ„æºç‰ˆ
+            PlayerBtnLeft(this.isPlayable, () => { playPrev(); });
+            if (this.isPlaying) {
+              PlayerBtnEnd(this.isPlayable, () => { togglePlayPause(); });
+            } else {
+              PlayerBtnBegin(this.isPlayable, () => { togglePlayPause(); });
+            }
+            PlayerBtnRight(this.isPlayable, () => { playNext(); });
+          }
+          .padding({ left: 12, right: 12, top: 12, bottom: 10 })
+          .backgroundColor(Color.White)
+          .borderRadius(18)
+          .shadow({ radius: 14, color: 0x22000000, offsetX: 0, offsetY: 6 });
+
+          // è¿›åº¦æ¡ï¼ˆminiï¼‰
+          Slider({
+            value: this.dragging ? this.dragValue : this.positionMs,
+            min: 0,
+            max: this.durationMs > 0 ? this.durationMs : 1
+          })
+            .height(28)
+            .enabled(this.isPlayable && !this.isLoading)
+            .onChange((v: number) => {
+              if (!this.isPlayable || this.isLoading) return;
+              this.dragging = true;
+              this.dragValue = v;
+            })
+            .onTouch((e: TouchEvent) => {
+              if (!this.isPlayable || this.isLoading) return;
+
+              if (e.type === TouchType.Down) {
+                this.dragging = true;
+                this.dragValue = this.positionMs;
+              } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+                const max = this.durationMs > 0 ? this.durationMs : this.dragValue;
+                const target = Math.max(0, Math.min(this.dragValue, max));
+                this.dragging = false;
+                seekTo(target);
+              }
+            });
+
+            Row() {
+              Text(this.fmt(this.dragging ? this.dragValue : this.positionMs)).fontSize(11).fontColor(0x6B7280);
+              Blank().layoutWeight(1);
+              Text(this.fmt(this.durationMs)).fontSize(11).fontColor(0x6B7280);
+            }
+            .padding({ left: 6, right: 6 });
+          }
+        .width('100%')
+        .padding({ left: 12, right: 12, bottom: 10 });
+      } else {
+        Column() {}.width('100%').height(0);
+      }
+    }
+    .width('100%');
+  }
+}ÀÔrE“½../service/AudioPlayerService¬../common/UI¶../service/PlayerStateÔrF—ªassertions¨external¢id¤meta±moduleSideEffectsªresolvedByµsyntheticNamedExportsAÂÙLF:\DevEco_sdk\music_classs\entry\src\main\ets\service\AudioPlayerService.etsAÃªoh-resolveÂFAÂÙ;F:\DevEco_sdk\music_classs\entry\src\main\ets\common\UI.etsAÃªoh-resolveÂFAÂÙEF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PlayerState.etsAÃªoh-resolveÂ“ÔrG–§version¤fileªsourceRoot§sources¥names¨mappings¬PlayerBar.js ‘­PlayerBar.etsÜ;Ü ”   ” ”	 ” ” ”, ”. ”ÌD ”ÌF ”Ì\ ”Ì^ ”Ìs ”Ìu ”Ì{ ”Ì“ ”Ì”  Ü ”   ” ”	 	” ” ”   ”" "”* *”, ,”4 4”6 6”ÌH ÌH”ÌJ ÌJ”ÌP ÌP”Ìo Ìo”Ìp Ìp”   ” ”	 	” ” ”& &”( (”6 6”8 8”ÌD ÌD”ÌF ÌF”ÌL ÌL”ÌZ ÌZ”Ì[ Ì[””   ” ” ” ‘”  ””0 ”ÌE $”ÌG 9”ÌK =””3 ”ÌI %”ÌK <”ÌL =””2 ”ÌD !”ÌF 8”ÌK =””4 ”ÌC ”ÌE Ì@”ÌN ÌI””2 ”ÌD !”ÌF 8”ÌK =””3 ”ÌI %”ÌK <”ÌL =’”7 ”< "’”8 ”9 ‘” ’”! (”# *’”& ”/ ’” &” -’” &” -’” '” 1’” '” 1’” #” ,’” #” ,’”  ” +’”  ” +’” #” ,’” #” ,’” '” 1’” '” 1’” ” ’” ” ’” 	” ’” 	” ’” 	” ’” 	” ˜” #
+”	 #”
+ #” #” #” #&” #(” #3Ü ” $” $” $” $” $” $” $” $”! $”" $”% $!”& $"”' $#”) $%”, $(”- $)”. $*”/ $+’” %” %”” '
+” '” '”
+ '” (” (
+” (” (” (” (” (” (”! (”$ ( ”( ($”) (%”* (&” )” )
+” )” )” )” )” )” )”  )”# )”% )!”& )"”' )#˜” *” *
+” *” *” *” *” *” *Ü ” +” +” +” +” +” +” +” +” +” +”  +”# +”& +"”' +#”( +$”) +%”* +&”+ +'”- +)”. +*’” ,” ,’” .
+” .š” /” /” /” /” /$”4 /9”6 /;”: /?”; /Ì@”< /ÌAš” 0” 0” 0” 0” 0”, 01”. 03”3 08”4 09”5 0:’” 1” 1‘” 3’” 4” 4
+–” 4” 4
+” Ì” Ì
+” Ì” Ìš” 5” 5
+” 5” 5” 5”  5”$ 5”% 5”0 5*”2 5,˜” 6” 6”& 6”( 6”- 6”/ 6”0 6”2 6–” 6” 6” Ì‰	”$ Ì‰”% Ì‰”+ Ì‰Ü ” 6” 6” ÌŠ	”& ÌŠ”' ÌŠ”) ÌŠ”- ÌŠ”/ ÌŠ”1 ÌŠ”3 ÌŠ”8 ÌŠ"”: ÌŠ$”< ÌŠ&”> ÌŠ(”ÌD ÌŠ.”ÌF ÌŠ0”ÌH ÌŠ2”ÌJ ÌŠ4˜” 7
+” 7”# 7”% 7”* 7”, 7”. 7”0 7Ü ” 7
+” 7” Ìb”# Ìb”$ Ìb”& Ìb”* Ìb”, Ìb”. Ìb”0 Ìb”5 Ìb$”7 Ìb&”9 Ìb(”; Ìb*”> Ìb-”Ì@ Ìb/”ÌB Ìb1”ÌD Ìb3”ÌJ Ìb9”ÌL Ìb;”ÌN Ìb=”ÌP Ìb?˜” 7
+” 7” Ìc”+ Ìc”, Ìc”1 Ìc ”2 Ìc!”7 Ìc&–” 7
+” 7” Ìd”( Ìd”) Ìd”+ ÌdÜ ” 7
+” 7” Ìe”" Ìe”# Ìe”% Ìe”+ Ìe”- Ìe”/ Ìe”1 Ìe ”6 Ìe%”8 Ìe'”ÌB Ìe1”ÌD Ìe3”ÌK Ìe:”ÌM Ìe<”ÌN Ìe=”ÌP Ìe?”ÌW ÌeÌF”ÌY ÌeÌH”ÌZ ÌeÌI”Ì\ ÌeÌK’” 8” 8Ü ” 9” 9”  9”! 9”, 9 ”- 9!”5 9)”9 9-”= 91”> 92”ÌI 9=”ÌJ 9>”ÌR 9ÌF”ÌS 9ÌG”ÌY 9ÌM”Ì\ 9ÌP”Ì] 9ÌQ”Ì_ 9ÌS˜”$ :”) :”1 :”5 :”6 :”ÌA :$”ÌB :%”ÌJ :-–”$ :”) :”* ;”/ ;”0 ;”2 ;–”$ :”) :”* ;”0 ;!”1 ;"”3 ;$–”$ :”) :”* ;&”6 ;2”7 ;3”9 ;5˜”$ :”) :”* ;7”3 ;Ì@”4 ;ÌA”< ;ÌI”= ;ÌJ”ÌB ;ÌOÜ ”$ :”) :”* <”0 <”1 <”3 <”9 < ”; <"”= <$”? <&”ÌD <+”ÌF <-”ÌP <7”ÌR <9”ÌY <Ì@”Ì[ <ÌB”Ì\ <ÌC”Ì^ <ÌE”Ìe <ÌL”Ìg <ÌN”Ìh <ÌO”Ìj <ÌQ‘” =‘” =’”$ >”) >Ü ”$ >”) >”* ÌB”0 ÌB”1 ÌB”3 ÌB”9 ÌB”; ÌB ”= ÌB"”? ÌB$”ÌD ÌB)”ÌF ÌB+”ÌP ÌB5”ÌR ÌB7”ÌY ÌB>”Ì[ ÌBÌ@”Ì\ ÌBÌA”Ì^ ÌBÌC”Ìe ÌBÌJ”Ìg ÌBÌL”Ìh ÌBÌM”Ìj ÌBÌO’”$ ?”* ?–”$ ?”* ?”+ ?”0 ?!”1 ?"”3 ?$–”$ ?”* ?”+ ?&”1 ?,”2 ?-”4 ?/–”$ ?”* ?”+ ?1”7 ?=”8 ?>”: ?Ì@–”$ ?”* ?”+ ?ÌB”: ?ÌQ”; ?ÌR”ÌC ?ÌZ’”  ?”& ?””$ Ì@”( Ì@”0 Ì@”3 Ì@–”$ Ì@”( Ì@”) Ì@”1 Ì@"”2 Ì@#”4 Ì@%–”$ Ì@”( Ì@”) Ì@'”2 Ì@0”3 Ì@1”; Ì@9’”  Ì@”$ Ì@’”  >”% >‘” ÌC’” ÌE”+ ÌE˜” ÌF” ÌF”& ÌF”( ÌF”- ÌF”/ ÌF”0 ÌF”2 ÌF’” ÌE”+ ÌE–” ÌF” ÌF” ÌO”+ ÌO”, ÌO”- ÌO’” ÌE”+ ÌE˜” ÌF” ÌF” ÌP”) ÌP”* ÌP”9 ÌP'”: ÌP(”? ÌP-’” ÌE”+ ÌE—” ÌF” ÌF” ÌQ”& ÌQ”' ÌQ”* ÌQ”, ÌQ’” ÌR”( ÌR–” ÌS”  ÌS”! ÌS”( ÌS”* ÌS”+ ÌS’” ÌU”ÌJ ÌU<’” ÌV”ÌC ÌV5’” ÌW” ÌW˜” ÌG” ÌG”$ ÌG”( ÌG”) ÌG”4 ÌG#”5 ÌG$”9 ÌG(–” ÌG” ÌG” ÌH”% ÌH”& ÌH”( ÌH˜” ÌG” ÌG” ÌH”' ÌH(”( ÌH)”2 ÌH3”3 ÌH4”9 ÌH:–” ÌG” ÌG” ÌH<”& ÌHÌE”' ÌHÌF”/ ÌHÌN–” ÌG” ÌG” ÌI”% ÌI”& ÌI”' ÌIœ” ÌG” ÌG” ÌI”) ÌI)”* ÌI*”, ÌI,”4 ÌI4”6 ÌI6”ÌB ÌIÌB”ÌC ÌIÌC”ÌK ÌIÌK”ÌM ÌIÌM’” ÌG” ÌG˜” ÌK” ÌK”$ ÌK”( ÌK”) ÌK”4 ÌK#”5 ÌK$”? ÌK.–” ÌK” ÌK” ÌL”% ÌL”& ÌL”( ÌL–” ÌK” ÌK” ÌL”& ÌL'”' ÌL(”/ ÌL0–” ÌK” ÌK” ÌM”% ÌM”& ÌM”' ÌMœ” ÌK” ÌK” ÌM”) ÌM)”* ÌM*”, ÌM,”4 ÌM4”6 ÌM6”ÌB ÌMÌB”ÌC ÌMÌC”ÌK ÌMÌK”ÌM ÌMÌM’” ÌK” ÌK’” ÌE”' ÌE’” ÌF” ÌF’” ÌY” ÌYÜ ” ÌZ”! ÌZ”- ÌZ”1 ÌZ”2 ÌZ”< ÌZ)”> ÌZ+”ÌA ÌZ.”ÌC ÌZ0”ÌF ÌZ3”ÌN ÌZ;”ÌP ÌZ=”ÌQ ÌZ>”ÌR ÌZ?”ÌS ÌZÌ@”ÌT ÌZÌA–” Ì[” Ì[”  Ì[”! Ì[”* Ì[”, Ì[ Ü ”  Ì\”, Ì\”8 Ì\”< Ì\”= Ì\ ”ÌG Ì\*”ÌI Ì\,”ÌL Ì\/”ÌN Ì\1”ÌQ Ì\4”Ì` Ì\ÌC”Ìb Ì\ÌE”Ìc Ì\ÌF”Ìd Ì\ÌG”Ìe Ì\ÌH”Ìf Ì\ÌI‘” Ì]‘” Ì]Ü ”  Ì^”. Ì^”: Ì^”> Ì^!”? Ì^"”ÌI Ì^,”ÌK Ì^.”ÌN Ì^1”ÌP Ì^3”ÌS Ì^6”Ìb Ì^ÌE”Ìd Ì^ÌG”Ìe Ì^ÌH”Ìf Ì^ÌI”Ìg Ì^ÌJ”Ìh Ì^ÌK‘” Ì_Ü ” Ì`”" Ì`”. Ì`”2 Ì`”3 Ì` ”= Ì`*”? Ì`,”ÌB Ì`/”ÌD Ì`1”ÌG Ì`4”ÌO Ì`<”ÌQ Ì`>”ÌR Ì`?”ÌS Ì`Ì@”ÌT Ì`ÌA”ÌU Ì`ÌB’” 7
+” 7’” Ìg
+”$ Ìg“” Ìh
+” Ìh”& ÌhÜ ” Ìi”! Ìi”# Ìi”' Ìi”( Ìi”0 Ìi ”1 Ìi!”2 Ìi"”3 Ìi#”7 Ìi'”8 Ìi(”ÌA Ìi1”ÌB Ìi2”ÌC Ìi3”ÌD Ìi4”ÌH Ìi8”ÌI Ìi9”ÌS ÌiÌC”” Ìj” Ìj”! Ìj”" ÌjÜ ” Ìk” Ìk”! Ìk”% Ìk”& Ìk”0 Ìk ”3 Ìk#”4 Ìk$”5 Ìk%”6 Ìk&”7 Ìk'”; Ìk+”< Ìk,”ÌF Ìk6”ÌG Ìk7”ÌH Ìk8”ÌI Ìk9”ÌJ Ìk:‘” Ìl’” Ìg
+”$ Ìg–” Ìh
+” Ìh” Ìm”% Ìm”& Ìm”( Ìm’” Ìg
+”$ Ìg” Ìh
+” Ìh” Ìn”& Ìn”' Ìn”+ Ìn”, Ìn”6 Ìn$”: Ìn(”; Ìn)”? Ìn-”Ì@ Ìn.”ÌI Ìn7’” Ìg
+”$ Ìg™” Ìh
+” Ìh” Ìo”' Ìo”( Ìo”) Ìo”* Ìo ”, Ìo"”. Ìo$š” Ìp”  Ìp”! Ìp”% Ìp”& Ìp”0 Ìp"”4 Ìp&”8 Ìp*”9 Ìp+”ÌB Ìp4’”  Ìp6”' Ìp=—” Ìq”  Ìq”! Ìq”) Ìq”, Ìq”0 Ìq"”1 Ìq#—” Ìr”  Ìr”! Ìr”* Ìr”- Ìr”. Ìr ”/ Ìr!’” Ìs” Ìs’” Ìg
+”$ Ìg™” Ìh
+” Ìh” Ìt”& Ìt”' Ìt”( Ìt”) Ìt#”+ Ìt%”- Ìt'š” Ìu”  Ìu”! Ìu”% Ìu”& Ìu”0 Ìu"”4 Ìu&”8 Ìu*”9 Ìu+”ÌB Ìu4’”  Ìu6”' Ìu=š” Ìw”  Ìw”! Ìw”" Ìw”& Ìw”+ Ìw”4 Ìw&”5 Ìw'”9 Ìw+”; Ìw-—”  Ìx”$ Ìx”% Ìx”- Ìx”0 Ìx ”4 Ìx$”5 Ìx%™”  Ìy”$ Ìy”% Ìy”. Ìy”1 Ìy!”5 Ìy%”6 Ìy&”Ì@ Ìy0”ÌA Ìy1‘” ÌzÜ ”! Ìz”% Ìz”& Ìz”' Ìz”+ Ìz”0 Ìz$”9 Ìz-”: Ìz.”< Ìz0”Ì@ Ìz4”ÌA Ìz5”ÌB Ìz6”ÌF Ìz:”ÌK Ìz?”ÌT ÌzÌH”ÌU ÌzÌI”Ì[ ÌzÌO”Ì] ÌzÌQÜ ”  Ì{”& Ì{”) Ì{”, Ì{”0 Ì{ ”1 Ì{!”; Ì{+”> Ì{.”? Ì{/”Ì@ Ì{0”ÌA Ì{1”ÌB Ì{2”ÌF Ì{6”ÌG Ì{7”ÌQ Ì{ÌA”ÌR Ì{ÌB”ÌS Ì{ÌC”ÌT Ì{ÌD”ÌX Ì{ÌH”ÌY Ì{ÌI”Ìb Ì{ÌR”Ìc Ì{ÌSÜ ”  Ì|”& Ì|”, Ì|”/ Ì|”3 Ì|#”4 Ì|$”7 Ì|'”8 Ì|(”9 Ì|)”; Ì|+”? Ì|/”Ì@ Ì|0”ÌC Ì|3”ÌD Ì|4”ÌH Ì|8”ÌI Ì|9”ÌR Ì|ÌB”ÌT Ì|ÌD”ÌW Ì|ÌG”ÌX Ì|ÌH”ÌY Ì|ÌI”ÌZ Ì|ÌJ—”  Ì}”$ Ì}”% Ì}”- Ì}”0 Ì} ”5 Ì}%”6 Ì}&–”  Ì~”& Ì~”' Ì~”- Ì~”. Ì~”/ Ì~‘” Ì’” Ì€” Ì€’” Ì‚” Ì‚” Ì‚” Ì‚” Ì‡”# Ì‡”$ Ì‡”& Ì‡”* Ì‡”, Ì‡”- Ì‡”/ Ì‡ ”4 Ì‡%”6 Ì‡'”7 Ì‡(”9 Ì‡*Ü ” Ìƒ” Ìƒ”$ Ìƒ”( Ìƒ”) Ìƒ”, Ìƒ”- Ìƒ”1 Ìƒ ”2 Ìƒ!”: Ìƒ)”; Ìƒ*”< Ìƒ+”= Ìƒ,”ÌA Ìƒ0”ÌB Ìƒ1”ÌK Ìƒ:”ÌL Ìƒ;”ÌM Ìƒ<”ÌN Ìƒ=”ÌR ÌƒÌA”ÌS ÌƒÌB”Ì] ÌƒÌL”Ì^ ÌƒÌM–” Ìƒ” Ìƒ” ÌƒÌO”% ÌƒÌW”& ÌƒÌX”( ÌƒÌZ–” Ìƒ” Ìƒ” ÌƒÌ\”& ÌƒÌe”' ÌƒÌf”/ ÌƒÌn’” Ìƒ” Ìƒ’” Ì„” Ì„–” Ì„” Ì„” Ì„”* Ì„"”+ Ì„#”, Ì„$’” Ì„” Ì„›” Ì…” Ì…”$ Ì…”( Ì…”) Ì…”, Ì…”- Ì…”1 Ì… ”2 Ì…!”< Ì…+”= Ì…,–” Ì…” Ì…” Ì….”% Ì…6”& Ì…7”( Ì…9–” Ì…” Ì…” Ì…;”& Ì…ÌD”' Ì…ÌE”/ Ì…ÌM’” Ì…” Ì…’” Ì‚” Ì‚’” 6” 6‘” Ì‹‘” Ì‹’” ÌŒ” ÌŒ–” ÌŒ” ÌŒ” ÌŒ”$ ÌŒ”% ÌŒ”+ ÌŒ –” ÌŒ” ÌŒ” ÌŒ"”% ÌŒ(”& ÌŒ)”' ÌŒ*’” ÌŒ” ÌŒ‘” Ì’” 4” 4
+‘” ÌÔrH–§version¤file§sources®sourcesContent¥names¨mappingsÀ‘À‘ÀÜ@‘”    ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”  	 ‘”  
+ ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”    ‘”  ! ‘”  " ‘”  # ‘”  $ ‘”  % ‘”  & ‘”  ' ‘”  ( ‘”  ) ‘”  * ‘”  + ‘”  , ‘”  - ‘”  . ‘”  / ‘”  0 ‘”  1 ‘”  2 ‘”  3 ‘”  4 ‘”  5 ‘”  6 ‘”  7 ‘”  8 ‘”  9 ‘”  : ‘”  ; ‘”  < ‘”  = ‘”  > ‘”  ? ‘”  Ì@ ‘”  ÌA ‘”  ÌB ‘”  ÌC ‘”  ÌD ‘”  ÌE ‘”  ÌF ‘”  ÌG ‘”  ÌH ‘”  ÌI ‘”  ÌJ ‘”  ÌK ‘”  ÌL ‘”  ÌM ‘”  ÌN ‘”  ÌO ‘”  ÌP ‘”  ÌQ ‘”  ÌR ‘”  ÌS ‘”  ÌT ‘”  ÌU ‘”  ÌV ‘”  ÌW ‘”  ÌX ‘”  ÌY ‘”  ÌZ ‘”  Ì[ ‘”  Ì\ ‘”  Ì] ‘”  Ì^ ‘”  Ì_ ‘”  Ì` ‘”  Ìa ‘”  Ìb ‘”  Ìc ‘”  Ìd ‘”  Ìe ‘”  Ìf ‘”  Ìg ‘”  Ìh ‘”  Ìi ‘”  Ìj ‘”  Ìk ‘”  Ìl ‘”  Ìm ‘”  Ìn ‘”  Ìo ‘”  Ìp ‘”  Ìq ‘”  Ìr ‘”  Ìs ‘”  Ìt ‘”  Ìu ‘”  Ìv ‘”  Ìw ‘”  Ìx ‘”  Ìy ‘”  Ìz ‘”  Ì{ ‘”  Ì| ‘”  Ì} ‘”  Ì~ ‘”  Ì ‘”  Ì€ ‘”  Ì ‘”  Ì‚ ‘”  Ìƒ ‘”  Ì„ ‘”  Ì… ‘”  Ì† ‘”  Ì‡ ‘”  Ìˆ ‘”  Ì‰ ‘”  ÌŠ ‘”  Ì‹ ‘”  ÌŒ ‘”  Ì ‘”  Ì ‘”  Ì ‘”  Ì ‘”  Ì‘ ‘”  Ì’ ‘”  Ì“ ‘”  Ì” ‘”  Ì• ‘”  Ì– ‘”  Ì— ‘”  Ì˜ ‘”  Ì™ ‘”  Ìš ‘”  Ì› ‘”  Ìœ ‘”  Ì ‘”  Ì ‘”  ÌŸ ‘”  Ì  ‘”  Ì¡ ‘”  Ì¢ ‘”  Ì£ ‘”  Ì¤ ‘”  Ì¥ ‘”  Ì¦ ‘”  Ì§ ‘”  Ì¨ ‘”  Ì© ‘”  Ìª ‘”  Ì« ‘”  Ì¬ ‘”  Ì­ ‘”  Ì® ‘”  Ì¯ ‘”  Ì° ‘”  Ì± ‘”  Ì² ‘”  Ì³ ‘”  Ì´ ‘”  Ìµ ‘”  Ì¶ ‘”  Ì· ‘”  Ì¸ ‘”  Ì¹ ‘”  Ìº ‘”  Ì» ‘”  Ì¼ ‘”  Ì½ ‘”  Ì¾ ‘”  Ì¿ ‘”  ÌÀ ‘”  ÌÁ ‘”  ÌÂ ‘”  ÌÃ ‘”  ÌÄ ‘”  ÌÅ ‘”  ÌÆ ‘”  ÌÇ ‘”  ÌÈ ‘”  ÌÉ ‘”  ÌÊ ‘”  ÌË ‘”  ÌÌ ‘”  ÌÍ ‘”  ÌÎ ‘”  ÌÏ ‘”  ÌĞ ‘”  ÌÑ ‘”  ÌÒ ‘”  ÌÓ ‘”  ÌÔ ‘”  ÌÕ ‘”  ÌÖ ‘”  Ì× ‘”  ÌØ ‘”  ÌÙ ‘”  ÌÚ ‘”  ÌÛ ‘”  ÌÜ ‘”  Ìİ ‘”  ÌŞ ‘”  Ìß ‘”  Ìà ‘”  Ìá ‘”  Ìâ ‘”  Ìã ‘”  Ìä ‘”  Ìå ‘”  Ìæ ‘”  Ìç ‘”  Ìè ‘”  Ìé ‘”  Ìê ‘”  Ìë ‘”  Ìì ‘”  Ìí ‘”  Ìî ‘”  Ìï ‘”  Ìğ ‘”  Ìñ ‘”  Ìò ‘”  Ìó ‘”  Ìô ‘”  Ìõ ‘”  Ìö ‘”  Ì÷ ‘”  Ìø ‘”  Ìù ‘”  Ìú ‘”  Ìû ‘”  Ìü ‘”  Ìı ‘”  Ìş ‘”  Ìÿ ‘”  Í  ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í	 ‘”  Í
+ ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í  ‘”  Í! ‘”  Í" ‘”  Í# ‘”  Í$ ‘”  Í% ‘”  Í& ‘”  Í' ‘”  Í( ‘”  Í) ‘”  Í* ‘”  Í+ ‘”  Í, ‘”  Í- ‘”  Í. ‘”  Í/ ‘”  Í0 ‘”  Í1 ‘”  Í2 ‘”  Í3 ‘”  Í4 ‘”  Í5 ‘”  Í6 ‘”  Í7 ‘”  Í8 ‘”  Í9 ‘”  Í: ‘”  Í; ‘”  Í< ‘”  Í= ‘”  Í> ‘”  Í? ÔrI’§missing¦pluginÃ¦genAbcÂÔ  ÔrJ”²dynamicImportCache¹exportAllDeclarationCache»exportNamedDeclarationCache«importCache‘ÔrK–¤type¥start£end«declarationªspecifiers¦source¶ExportNamedDeclarationÍåÍ:ÔrL–¤type¥start£end¢idªsuperClass¤body°ClassDeclarationÍìÍ:ÔrM”¤type¥start£end¤nameªIdentifierÍòÍû©PlayerBarMªIdentifierÍÍ
+¦ViewPUÔrN”¤type¥start£end¤body©ClassBodyÍÍ:Ü ÔrO˜¤type¥start£end¦static¨computed£key¤kind¥value°MethodDefinitionÍÍ°ÂÂMªIdentifierÍÍ«constructor«constructorÔrP™¤type¥start£end¢idªexpression©generator¥async¦params¤body²FunctionExpressionÍÍ°ÀÂÂÂ–MªIdentifierÍÍ$¦parentMªIdentifierÍ&Í,¦paramsMªIdentifierÍ.Í<®__localStorageÔrQ•¤type¥start£end¤left¥right±AssignmentPatternÍ>ÍIMªIdentifierÍ>ÍD¦elmtIdÔrR–¤type¥start£end¨operator¦prefix¨argument¯UnaryExpressionÍGÍI¡-ÃÔrS•¤type¥start£end¥value£raw§LiteralÍHÍI¡1Q±AssignmentPatternÍKÍcMªIdentifierÍKÍW¬paramsLambdaMªIdentifierÍZÍc©undefinedMªIdentifierÍeÍn©extraInfoN®BlockStatementÍpÍ°ÔrT”¤type¥start£endªexpression³ExpressionStatementÍ{Í¬ÔrU–¤type¥start£end¦callee©arguments¨optional®CallExpressionÍ{Í«ÔrV“¤type¥start£end¥SuperÍ{Í€”MªIdentifierÍÍ‡¦parentMªIdentifierÍ‰Í—®__localStorageMªIdentifierÍ™ÍŸ¦elmtIdMªIdentifierÍ¡Íª©extraInfoÂÔrW–¤type¥start£end¤testªconsequent©alternate«IfStatementÍ¶ÍÔrX–¤type¥start£end¤left¨operator¥right°BinaryExpressionÍºÍÜR¯UnaryExpressionÍºÍÍ¦typeofÃMªIdentifierÍÁÍÍ¬paramsLambda£===S§LiteralÍÒÍÜ¨functionª"function"N®BlockStatementÍŞÍ‘T³ExpressionStatementÍíÍÔrY–¤type¥start£end¨operator¤left¥right´AssignmentExpressionÍíÍ¡=ÔrZ—¤type¥start£end¦object¨property¨computed¨optional°MemberExpressionÍíÍV®ThisExpressionÍíÍñMªIdentifierÍòÍ°paramsGenerator_ÂÂMªIdentifierÍÍ¬paramsLambdaÀT³ExpressionStatementÍ'ÍwY´AssignmentExpressionÍ'Ív¡=Z°MemberExpressionÍ'Í5V®ThisExpressionÍ'Í+MªIdentifierÍ,Í5©__visibleÂÂU®CallExpressionÍ8ÍvZ°MemberExpressionÍ8ÍNV®ThisExpressionÍ8Í<MªIdentifierÍ=ÍN±createStorageLinkÂÂ“MªIdentifierÍOÍdµPLAYERBAR_VISIBLE_KEYS§LiteralÍfÍjÃ¤trueS§LiteralÍlÍu§visible©"visible"ÂT³ExpressionStatementÍÍÕY´AssignmentExpressionÍÍÔ¡=Z°MemberExpressionÍÍ’V®ThisExpressionÍÍ…MªIdentifierÍ†Í’¬__durationMsÂÂU®CallExpressionÍ•ÍÔZ°MemberExpressionÍ•Í«V®ThisExpressionÍ•Í™MªIdentifierÍšÍ«±createStorageLinkÂÂ“MªIdentifierÍ¬ÍÂ¶PLAYER_DURATION_MS_KEYS§LiteralÍÄÍÅ ¡0S§LiteralÍÇÍÓªdurationMs¬"durationMs"ÂT³ExpressionStatementÍßÍ1Y´AssignmentExpressionÍßÍ0¡=Z°MemberExpressionÍßÍïV®ThisExpressionÍßÍãMªIdentifierÍäÍï«__isLoadingÂÂU®CallExpressionÍòÍ0Z°MemberExpressionÍòÍV®ThisExpressionÍòÍöMªIdentifierÍ÷Í±createStorageLinkÂÂ“MªIdentifierÍ	Í²PLAYER_LOADING_KEYS§LiteralÍÍ"Â¥falseS§LiteralÍ$Í/©isLoading«"isLoading"ÂT³ExpressionStatementÍ;Í’Y´AssignmentExpressionÍ;Í‘¡=Z°MemberExpressionÍ;ÍMV®ThisExpressionÍ;Í?MªIdentifierÍ@ÍM­__currentSongÂÂU®CallExpressionÍPÍ‘Z°MemberExpressionÍPÍfV®ThisExpressionÍPÍTMªIdentifierÍUÍf±createStorageLinkÂÂ“MªIdentifierÍgÍv¯PLAYER_SONG_KEYMªIdentifierÍxÍ©undefinedS§LiteralÍƒÍ«currentSong­"currentSong"ÂT³ExpressionStatementÍœÍîY´AssignmentExpressionÍœÍí¡=Z°MemberExpressionÍœÍ¬V®ThisExpressionÍœÍ MªIdentifierÍ¡Í¬«__isPlayingÂÂU®CallExpressionÍ¯ÍíZ°MemberExpressionÍ¯ÍÅV®ThisExpressionÍ¯Í³MªIdentifierÍ´ÍÅ±createStorageLinkÂÂ“MªIdentifierÍÆÍØ²PLAYER_PLAYING_KEYS§LiteralÍÚÍßÂ¥falseS§LiteralÍáÍì©isPlaying«"isPlaying"ÂT³ExpressionStatementÍøÍLY´AssignmentExpressionÍøÍK¡=Z°MemberExpressionÍøÍ	V®ThisExpressionÍøÍüMªIdentifierÍıÍ	¬__positionMsÂÂU®CallExpressionÍÍKZ°MemberExpressionÍÍ"V®ThisExpressionÍÍMªIdentifierÍÍ"±createStorageLinkÂÂ“MªIdentifierÍ#Í9¶PLAYER_POSITION_MS_KEYS§LiteralÍ;Í< ¡0S§LiteralÍ>ÍJªpositionMs¬"positionMs"ÂT³ExpressionStatementÍVÍ°Y´AssignmentExpressionÍVÍ¯¡=Z°MemberExpressionÍVÍfV®ThisExpressionÍVÍZMªIdentifierÍ[Íf«__callbacksÂÂÔr[•¤type¥start£end¦callee©arguments­NewExpressionÍiÍ¯MªIdentifierÍmÍŠ½SynchedPropertyObjectOneWayPU“Z°MemberExpressionÍ‹Í›MªIdentifierÍ‹Í‘¦paramsMªIdentifierÍ’Í›©callbacksÂÂV®ThisExpressionÍÍ¡S§LiteralÍ£Í®©callbacks«"callbacks"T³ExpressionStatementÍºÍY´AssignmentExpressionÍºÍ¡=Z°MemberExpressionÍºÍÉV®ThisExpressionÍºÍ¾MªIdentifierÍ¿ÍÉª__draggingÂÂ[­NewExpressionÍÌÍMªIdentifierÍĞÍè¸ObservedPropertySimplePU“S§LiteralÍéÍîÂ¥falseV®ThisExpressionÍğÍôS§LiteralÍöÍ ¨draggingª"dragging"T³ExpressionStatementÍÍRY´AssignmentExpressionÍÍQ¡=Z°MemberExpressionÍÍV®ThisExpressionÍÍMªIdentifierÍÍ«__dragValueÂÂ[­NewExpressionÍÍQMªIdentifierÍ#Í;¸ObservedPropertySimplePU“S§LiteralÍ<Í= ¡0V®ThisExpressionÍ?ÍCS§LiteralÍEÍP©dragValue«"dragValue"T³ExpressionStatementÍ\ÍƒU®CallExpressionÍ\Í‚Z°MemberExpressionÍ\ÍzV®ThisExpressionÍ\Í`MªIdentifierÍaÍz¹setInitiallyProvidedValueÂÂ‘MªIdentifierÍ{Í¦paramsÂT³ExpressionStatementÍÍ©U®CallExpressionÍÍ¨Z°MemberExpressionÍÍ¦V®ThisExpressionÍÍ‘MªIdentifierÍ’Í¦´finalizeConstructionÂÂÂO°MethodDefinitionÍ¶ÍÂÂMªIdentifierÍ¶ÍÏ¹setInitiallyProvidedValue¦methodP²FunctionExpressionÍÏÍÀÂÂÂ‘MªIdentifierÍĞÍÖ¦paramsN®BlockStatementÍØÍ“W«IfStatementÍãÍ:X°BinaryExpressionÍçÍZ°MemberExpressionÍçÍ÷MªIdentifierÍçÍí¦paramsMªIdentifierÍîÍ÷©callbacksÂÂ£===MªIdentifierÍüÍ©undefinedN®BlockStatementÍÍ:‘T³ExpressionStatementÍÍ/U®CallExpressionÍÍ.Z°MemberExpressionÍÍ*Z°MemberExpressionÍÍ&V®ThisExpressionÍÍMªIdentifierÍÍ&«__callbacksÂÂMªIdentifierÍ'Í*£setÂÂ‘Ôr\”¤type¥start£endªproperties°ObjectExpressionÍ+Í-ÂÀW«IfStatementÍDÍ¡X°BinaryExpressionÍHÍeZ°MemberExpressionÍHÍWMªIdentifierÍHÍN¦paramsMªIdentifierÍOÍW¨draggingÂÂ£!==MªIdentifierÍ\Íe©undefinedN®BlockStatementÍgÍ¡‘T³ExpressionStatementÍvÍ–Y´AssignmentExpressionÍvÍ•¡=Z°MemberExpressionÍvÍƒV®ThisExpressionÍvÍzMªIdentifierÍ{Íƒ¨draggingÂÂZ°MemberExpressionÍ†Í•MªIdentifierÍ†ÍŒ¦paramsMªIdentifierÍÍ•¨draggingÂÂÀW«IfStatementÍ«ÍX°BinaryExpressionÍ¯ÍÍZ°MemberExpressionÍ¯Í¿MªIdentifierÍ¯Íµ¦paramsMªIdentifierÍ¶Í¿©dragValueÂÂ£!==MªIdentifierÍÄÍÍ©undefinedN®BlockStatementÍÏÍ‘T³ExpressionStatementÍŞÍ Y´AssignmentExpressionÍŞÍÿ¡=Z°MemberExpressionÍŞÍìV®ThisExpressionÍŞÍâMªIdentifierÍãÍì©dragValueÂÂZ°MemberExpressionÍïÍÿMªIdentifierÍïÍõ¦paramsMªIdentifierÍöÍÿ©dragValueÂÂÀO°MethodDefinitionÍÍkÂÂMªIdentifierÍÍ'¯updateStateVars¦methodP²FunctionExpressionÍ'ÍkÀÂÂÂ‘MªIdentifierÍ(Í.¦paramsN®BlockStatementÍ0Ík‘T³ExpressionStatementÍ;ÍdU®CallExpressionÍ;ÍcZ°MemberExpressionÍ;ÍQZ°MemberExpressionÍ;ÍKV®ThisExpressionÍ;Í?MªIdentifierÍ@ÍK«__callbacksÂÂMªIdentifierÍLÍQ¥resetÂÂ‘Z°MemberExpressionÍRÍbMªIdentifierÍRÍX¦paramsMªIdentifierÍYÍb©callbacksÂÂÂO°MethodDefinitionÍqÍ
+ËÂÂMªIdentifierÍqÍ’Ù!purgeVariableDependenciesOnElmtId¦methodP²FunctionExpressionÍ’Í
+ËÀÂÂÂ‘MªIdentifierÍ“Í›¨rmElmtIdN®BlockStatementÍÍ
+Ë™T³ExpressionStatementÍ¨ÍÙU®CallExpressionÍ¨ÍØZ°MemberExpressionÍ¨ÍÎZ°MemberExpressionÍ¨Í¶V®ThisExpressionÍ¨Í¬MªIdentifierÍ­Í¶©__visibleÂÂMªIdentifierÍ·ÍÎ·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍÏÍ×¨rmElmtIdÂT³ExpressionStatementÍãÍ	U®CallExpressionÍãÍ	Z°MemberExpressionÍãÍ	Z°MemberExpressionÍãÍôV®ThisExpressionÍãÍçMªIdentifierÍèÍô¬__durationMsÂÂMªIdentifierÍõÍ	·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ	Í	¨rmElmtIdÂT³ExpressionStatementÍ	!Í	TU®CallExpressionÍ	!Í	SZ°MemberExpressionÍ	!Í	IZ°MemberExpressionÍ	!Í	1V®ThisExpressionÍ	!Í	%MªIdentifierÍ	&Í	1«__isLoadingÂÂMªIdentifierÍ	2Í	I·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ	JÍ	R¨rmElmtIdÂT³ExpressionStatementÍ	^Í	“U®CallExpressionÍ	^Í	’Z°MemberExpressionÍ	^Í	ˆZ°MemberExpressionÍ	^Í	pV®ThisExpressionÍ	^Í	bMªIdentifierÍ	cÍ	p­__currentSongÂÂMªIdentifierÍ	qÍ	ˆ·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ	‰Í	‘¨rmElmtIdÂT³ExpressionStatementÍ	Í	ĞU®CallExpressionÍ	Í	ÏZ°MemberExpressionÍ	Í	ÅZ°MemberExpressionÍ	Í	­V®ThisExpressionÍ	Í	¡MªIdentifierÍ	¢Í	­«__isPlayingÂÂMªIdentifierÍ	®Í	Å·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ	ÆÍ	Î¨rmElmtIdÂT³ExpressionStatementÍ	ÚÍ
+U®CallExpressionÍ	ÚÍ
+Z°MemberExpressionÍ	ÚÍ
+Z°MemberExpressionÍ	ÚÍ	ëV®ThisExpressionÍ	ÚÍ	ŞMªIdentifierÍ	ßÍ	ë¬__positionMsÂÂMªIdentifierÍ	ìÍ
+·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ
+Í
+¨rmElmtIdÂT³ExpressionStatementÍ
+Í
+KU®CallExpressionÍ
+Í
+JZ°MemberExpressionÍ
+Í
+@Z°MemberExpressionÍ
+Í
+(V®ThisExpressionÍ
+Í
+MªIdentifierÍ
+Í
+(«__callbacksÂÂMªIdentifierÍ
+)Í
+@·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ
+AÍ
+I¨rmElmtIdÂT³ExpressionStatementÍ
+UÍ
+‡U®CallExpressionÍ
+UÍ
+†Z°MemberExpressionÍ
+UÍ
+|Z°MemberExpressionÍ
+UÍ
+dV®ThisExpressionÍ
+UÍ
+YMªIdentifierÍ
+ZÍ
+dª__draggingÂÂMªIdentifierÍ
+eÍ
+|·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ
+}Í
+…¨rmElmtIdÂT³ExpressionStatementÍ
+‘Í
+ÄU®CallExpressionÍ
+‘Í
+ÃZ°MemberExpressionÍ
+‘Í
+¹Z°MemberExpressionÍ
+‘Í
+¡V®ThisExpressionÍ
+‘Í
+•MªIdentifierÍ
+–Í
+¡«__dragValueÂÂMªIdentifierÍ
+¢Í
+¹·purgeDependencyOnElmtIdÂÂ‘MªIdentifierÍ
+ºÍ
+Â¨rmElmtIdÂO°MethodDefinitionÍ
+ÑÍëÂÂMªIdentifierÍ
+ÑÍ
+á°aboutToBeDeleted¦methodP²FunctionExpressionÍ
+áÍëÀÂÂÂN®BlockStatementÍ
+äÍë›T³ExpressionStatementÍ
+ïÍU®CallExpressionÍ
+ïÍZ°MemberExpressionÍ
+ïÍZ°MemberExpressionÍ
+ïÍ
+ıV®ThisExpressionÍ
+ïÍ
+óMªIdentifierÍ
+ôÍ
+ı©__visibleÂÂMªIdentifierÍ
+şÍ°aboutToBeDeletedÂÂÂT³ExpressionStatementÍÍ@U®CallExpressionÍÍ?Z°MemberExpressionÍÍ=Z°MemberExpressionÍÍ,V®ThisExpressionÍÍMªIdentifierÍ Í,¬__durationMsÂÂMªIdentifierÍ-Í=°aboutToBeDeletedÂÂÂT³ExpressionStatementÍJÍnU®CallExpressionÍJÍmZ°MemberExpressionÍJÍkZ°MemberExpressionÍJÍZV®ThisExpressionÍJÍNMªIdentifierÍOÍZ«__isLoadingÂÂMªIdentifierÍ[Ík°aboutToBeDeletedÂÂÂT³ExpressionStatementÍxÍU®CallExpressionÍxÍZ°MemberExpressionÍxÍ›Z°MemberExpressionÍxÍŠV®ThisExpressionÍxÍ|MªIdentifierÍ}ÍŠ­__currentSongÂÂMªIdentifierÍ‹Í›°aboutToBeDeletedÂÂÂT³ExpressionStatementÍ¨ÍÌU®CallExpressionÍ¨ÍËZ°MemberExpressionÍ¨ÍÉZ°MemberExpressionÍ¨Í¸V®ThisExpressionÍ¨Í¬MªIdentifierÍ­Í¸«__isPlayingÂÂMªIdentifierÍ¹ÍÉ°aboutToBeDeletedÂÂÂT³ExpressionStatementÍÖÍûU®CallExpressionÍÖÍúZ°MemberExpressionÍÖÍøZ°MemberExpressionÍÖÍçV®ThisExpressionÍÖÍÚMªIdentifierÍÛÍç¬__positionMsÂÂMªIdentifierÍèÍø°aboutToBeDeletedÂÂÂT³ExpressionStatementÍÍ)U®CallExpressionÍÍ(Z°MemberExpressionÍÍ&Z°MemberExpressionÍÍV®ThisExpressionÍÍ	MªIdentifierÍ
+Í«__callbacksÂÂMªIdentifierÍÍ&°aboutToBeDeletedÂÂÂT³ExpressionStatementÍ3ÍVU®CallExpressionÍ3ÍUZ°MemberExpressionÍ3ÍSZ°MemberExpressionÍ3ÍBV®ThisExpressionÍ3Í7MªIdentifierÍ8ÍBª__draggingÂÂMªIdentifierÍCÍS°aboutToBeDeletedÂÂÂT³ExpressionStatementÍ`Í„U®CallExpressionÍ`ÍƒZ°MemberExpressionÍ`ÍZ°MemberExpressionÍ`ÍpV®ThisExpressionÍ`ÍdMªIdentifierÍeÍp«__dragValueÂÂMªIdentifierÍqÍ°aboutToBeDeletedÂÂÂT³ExpressionStatementÍÍºU®CallExpressionÍÍ¹Z°MemberExpressionÍÍ¬U®CallExpressionÍÍ¥Z°MemberExpressionÍÍ£MªIdentifierÍÍŸ±SubscriberManagerMªIdentifierÍ Í££GetÂÂÂMªIdentifierÍ¦Í¬¦deleteÂÂ‘U®CallExpressionÍ­Í¸Z°MemberExpressionÍ­Í¶V®ThisExpressionÍ­Í±MªIdentifierÍ²Í¶¤id__ÂÂÂÂT³ExpressionStatementÍÄÍäU®CallExpressionÍÄÍãZ°MemberExpressionÍÄÍáV®ThisExpressionÍÄÍÈMªIdentifierÍÉÍá¸aboutToBeDeletedInternalÂÂÂO°MethodDefinitionÍñÍ-ÂÂMªIdentifierÍõÍü§visible£getP²FunctionExpressionÍüÍ-ÀÂÂÂN®BlockStatementÍÿÍ-‘Ôr]”¤type¥start£end¨argument¯ReturnStatementÍ
+Í&U®CallExpressionÍÍ%Z°MemberExpressionÍÍ#Z°MemberExpressionÍÍV®ThisExpressionÍÍMªIdentifierÍÍ©__visibleÂÂMªIdentifierÍ Í#£getÂÂÂO°MethodDefinitionÍ3ÍxÂÂMªIdentifierÍ7Í>§visible£setP²FunctionExpressionÍ>ÍxÀÂÂÂ‘MªIdentifierÍ?ÍG¨newValueN®BlockStatementÍIÍx‘T³ExpressionStatementÍTÍqU®CallExpressionÍTÍpZ°MemberExpressionÍTÍfZ°MemberExpressionÍTÍbV®ThisExpressionÍTÍXMªIdentifierÍYÍb©__visibleÂÂMªIdentifierÍcÍf£setÂÂ‘MªIdentifierÍgÍo¨newValueÂO°MethodDefinitionÍ~ÍÀÂÂMªIdentifierÍ‚ÍŒªdurationMs£getP²FunctionExpressionÍŒÍÀÀÂÂÂN®BlockStatementÍÍÀ‘]¯ReturnStatementÍšÍ¹U®CallExpressionÍ¡Í¸Z°MemberExpressionÍ¡Í¶Z°MemberExpressionÍ¡Í²V®ThisExpressionÍ¡Í¥MªIdentifierÍ¦Í²¬__durationMsÂÂMªIdentifierÍ³Í¶£getÂÂÂO°MethodDefinitionÍÆÍÂÂMªIdentifierÍÊÍÔªdurationMs£setP²FunctionExpressionÍÔÍÀÂÂÂ‘MªIdentifierÍÕÍİ¨newValueN®BlockStatementÍßÍ‘T³ExpressionStatementÍêÍ
+U®CallExpressionÍêÍ	Z°MemberExpressionÍêÍÿZ°MemberExpressionÍêÍûV®ThisExpressionÍêÍîMªIdentifierÍïÍû¬__durationMsÂÂMªIdentifierÍüÍÿ£setÂÂ‘MªIdentifierÍ Í¨newValueÂO°MethodDefinitionÍÍWÂÂMªIdentifierÍÍ$©isLoading£getP²FunctionExpressionÍ$ÍWÀÂÂÂN®BlockStatementÍ'ÍW‘]¯ReturnStatementÍ2ÍPU®CallExpressionÍ9ÍOZ°MemberExpressionÍ9ÍMZ°MemberExpressionÍ9ÍIV®ThisExpressionÍ9Í=MªIdentifierÍ>ÍI«__isLoadingÂÂMªIdentifierÍJÍM£getÂÂÂO°MethodDefinitionÍ]Í¦ÂÂMªIdentifierÍaÍj©isLoading£setP²FunctionExpressionÍjÍ¦ÀÂÂÂ‘MªIdentifierÍkÍs¨newValueN®BlockStatementÍuÍ¦‘T³ExpressionStatementÍ€ÍŸU®CallExpressionÍ€ÍZ°MemberExpressionÍ€Í”Z°MemberExpressionÍ€ÍV®ThisExpressionÍ€Í„MªIdentifierÍ…Í«__isLoadingÂÂMªIdentifierÍ‘Í”£setÂÂ‘MªIdentifierÍ•Í¨newValueÂO°MethodDefinitionÍ¬ÍğÂÂMªIdentifierÍ°Í»«currentSong£getP²FunctionExpressionÍ»ÍğÀÂÂÂN®BlockStatementÍ¾Íğ‘]¯ReturnStatementÍÉÍéU®CallExpressionÍĞÍèZ°MemberExpressionÍĞÍæZ°MemberExpressionÍĞÍâV®ThisExpressionÍĞÍÔMªIdentifierÍÕÍâ­__currentSongÂÂMªIdentifierÍãÍæ£getÂÂÂO°MethodDefinitionÍöÍCÂÂMªIdentifierÍúÍ«currentSong£setP²FunctionExpressionÍÍCÀÂÂÂ‘MªIdentifierÍÍ¨newValueN®BlockStatementÍÍC‘T³ExpressionStatementÍÍ<U®CallExpressionÍÍ;Z°MemberExpressionÍÍ1Z°MemberExpressionÍÍ-V®ThisExpressionÍÍMªIdentifierÍ Í-­__currentSongÂÂMªIdentifierÍ.Í1£setÂÂ‘MªIdentifierÍ2Í:¨newValueÂO°MethodDefinitionÍIÍ‰ÂÂMªIdentifierÍMÍV©isPlaying£getP²FunctionExpressionÍVÍ‰ÀÂÂÂN®BlockStatementÍYÍ‰‘]¯ReturnStatementÍdÍ‚U®CallExpressionÍkÍZ°MemberExpressionÍkÍZ°MemberExpressionÍkÍ{V®ThisExpressionÍkÍoMªIdentifierÍpÍ{«__isPlayingÂÂMªIdentifierÍ|Í£getÂÂÂO°MethodDefinitionÍÍØÂÂMªIdentifierÍ“Íœ©isPlaying£setP²FunctionExpressionÍœÍØÀÂÂÂ‘MªIdentifierÍÍ¥¨newValueN®BlockStatementÍ§ÍØ‘T³ExpressionStatementÍ²ÍÑU®CallExpressionÍ²ÍĞZ°MemberExpressionÍ²ÍÆZ°MemberExpressionÍ²ÍÂV®ThisExpressionÍ²Í¶MªIdentifierÍ·ÍÂ«__isPlayingÂÂMªIdentifierÍÃÍÆ£setÂÂ‘MªIdentifierÍÇÍÏ¨newValueÂO°MethodDefinitionÍŞÍ ÂÂMªIdentifierÍâÍìªpositionMs£getP²FunctionExpressionÍìÍ ÀÂÂÂN®BlockStatementÍïÍ ‘]¯ReturnStatementÍúÍU®CallExpressionÍÍZ°MemberExpressionÍÍZ°MemberExpressionÍÍV®ThisExpressionÍÍMªIdentifierÍÍ¬__positionMsÂÂMªIdentifierÍÍ£getÂÂÂO°MethodDefinitionÍ&ÍqÂÂMªIdentifierÍ*Í4ªpositionMs£setP²FunctionExpressionÍ4ÍqÀÂÂÂ‘MªIdentifierÍ5Í=¨newValueN®BlockStatementÍ?Íq‘T³ExpressionStatementÍJÍjU®CallExpressionÍJÍiZ°MemberExpressionÍJÍ_Z°MemberExpressionÍJÍ[V®ThisExpressionÍJÍNMªIdentifierÍOÍ[¬__positionMsÂÂMªIdentifierÍ\Í_£setÂÂ‘MªIdentifierÍ`Íh¨newValueÂO°MethodDefinitionÍwÍ·ÂÂMªIdentifierÍ{Í„©callbacks£getP²FunctionExpressionÍ„Í·ÀÂÂÂN®BlockStatementÍ‡Í·‘]¯ReturnStatementÍ’Í°U®CallExpressionÍ™Í¯Z°MemberExpressionÍ™Í­Z°MemberExpressionÍ™Í©V®ThisExpressionÍ™ÍMªIdentifierÍÍ©«__callbacksÂÂMªIdentifierÍªÍ­£getÂÂÂO°MethodDefinitionÍ½ÍÂÂMªIdentifierÍÁÍÊ©callbacks£setP²FunctionExpressionÍÊÍÀÂÂÂ‘MªIdentifierÍËÍÓ¨newValueN®BlockStatementÍÕÍ‘T³ExpressionStatementÍàÍÿU®CallExpressionÍàÍşZ°MemberExpressionÍàÍôZ°MemberExpressionÍàÍğV®ThisExpressionÍàÍäMªIdentifierÍåÍğ«__callbacksÂÂMªIdentifierÍñÍô£setÂÂ‘MªIdentifierÍõÍı¨newValueÂO°MethodDefinitionÍÍJÂÂMªIdentifierÍÍ¨dragging£getP²FunctionExpressionÍÍJÀÂÂÂN®BlockStatementÍÍJ‘]¯ReturnStatementÍ&ÍCU®CallExpressionÍ-ÍBZ°MemberExpressionÍ-Í@Z°MemberExpressionÍ-Í<V®ThisExpressionÍ-Í1MªIdentifierÍ2Í<ª__draggingÂÂMªIdentifierÍ=Í@£getÂÂÂO°MethodDefinitionÍPÍ—ÂÂMªIdentifierÍTÍ\¨dragging£setP²FunctionExpressionÍ\Í—ÀÂÂÂ‘MªIdentifierÍ]Íe¨newValueN®BlockStatementÍgÍ—‘T³ExpressionStatementÍrÍU®CallExpressionÍrÍZ°MemberExpressionÍrÍ…Z°MemberExpressionÍrÍV®ThisExpressionÍrÍvMªIdentifierÍwÍª__draggingÂÂMªIdentifierÍ‚Í…£setÂÂ‘MªIdentifierÍ†Í¨newValueÂO°MethodDefinitionÍÍİÂÂMªIdentifierÍ¡Íª©dragValue£getP²FunctionExpressionÍªÍİÀÂÂÂN®BlockStatementÍ­Íİ‘]¯ReturnStatementÍ¸ÍÖU®CallExpressionÍ¿ÍÕZ°MemberExpressionÍ¿ÍÓZ°MemberExpressionÍ¿ÍÏV®ThisExpressionÍ¿ÍÃMªIdentifierÍÄÍÏ«__dragValueÂÂMªIdentifierÍĞÍÓ£getÂÂÂO°MethodDefinitionÍãÍ,ÂÂMªIdentifierÍçÍğ©dragValue£setP²FunctionExpressionÍğÍ,ÀÂÂÂ‘MªIdentifierÍñÍù¨newValueN®BlockStatementÍûÍ,‘T³ExpressionStatementÍÍ%U®CallExpressionÍÍ$Z°MemberExpressionÍÍZ°MemberExpressionÍÍV®ThisExpressionÍÍ
+MªIdentifierÍÍ«__dragValueÂÂMªIdentifierÍÍ£setÂÂ‘MªIdentifierÍÍ#¨newValueÂO°MethodDefinitionÍ2Í~ÂÂMªIdentifierÍ2Í7¥clamp¦methodP²FunctionExpressionÍ7Í~ÀÂÂÂ“MªIdentifierÍ8Í9¡vMªIdentifierÍ;Í>£minMªIdentifierÍ@ÍC£maxN®BlockStatementÍEÍ~‘]¯ReturnStatementÍPÍwU®CallExpressionÍWÍvZ°MemberExpressionÍWÍ_MªIdentifierÍWÍ[¤MathMªIdentifierÍ\Í_£maxÂÂ’MªIdentifierÍ`Íc£minU®CallExpressionÍeÍuZ°MemberExpressionÍeÍmMªIdentifierÍeÍi¤MathMªIdentifierÍjÍm£minÂÂ’MªIdentifierÍnÍo¡vMªIdentifierÍqÍt£maxÂÂO°MethodDefinitionÍ„Í6ÂÂMªIdentifierÍ„Í‡£fmt¦methodP²FunctionExpressionÍ‡Í6ÀÂÂÂ‘MªIdentifierÍˆÍŠ¢msN®BlockStatementÍŒÍ6”Ôr^•¤type¥start£end¬declarations¤kind³VariableDeclarationÍ—Í¹‘Ôr_•¤type¥start£end¢id¤init²VariableDeclaratorÍÍ¸MªIdentifierÍÍ £secU®CallExpressionÍ£Í¸Z°MemberExpressionÍ£Í­MªIdentifierÍ£Í§¤MathMªIdentifierÍ¨Í­¥floorÂÂ‘X°BinaryExpressionÍ®Í·MªIdentifierÍ®Í°¢ms¡/S§LiteralÍ³Í·Íè¤1000Â¥const^³VariableDeclarationÍÃÍâ‘_²VariableDeclaratorÍÉÍáMªIdentifierÍÉÍÊ¡mU®CallExpressionÍÍÍáZ°MemberExpressionÍÍÍ×MªIdentifierÍÍÍÑ¤MathMªIdentifierÍÒÍ×¥floorÂÂ‘X°BinaryExpressionÍØÍàMªIdentifierÍØÍÛ£sec¡/S§LiteralÍŞÍà<¢60Â¥const^³VariableDeclarationÍìÍÿ‘_²VariableDeclaratorÍòÍşMªIdentifierÍòÍó¡sX°BinaryExpressionÍöÍşMªIdentifierÍöÍù£sec¡%S§LiteralÍüÍş<¢60¥const]¯ReturnStatementÍ	Í/Ôr`•¤type¥start£end«expressions¦quasis¯TemplateLiteralÍÍ.’MªIdentifierÍÍ¡mWµConditionalExpressionÍÍ,X°BinaryExpressionÍÍMªIdentifierÍÍ¡s¡<S§LiteralÍÍ
+¢10X°BinaryExpressionÍ!Í(S§LiteralÍ!Í$¡0£'0'¡+MªIdentifierÍ'Í(¡sMªIdentifierÍ+Í,¡s“Ôra•¤type¥start£end¥value¤tail¯TemplateElementÍÍÔrb’£raw¦cooked  Âa¯TemplateElementÍÍb¡:¡:Âa¯TemplateElementÍ-Í-b  ÃO°MethodDefinitionÍ<ÍÃÂÂMªIdentifierÍ<ÍC§hideBar¦methodP²FunctionExpressionÍCÍÃÀÂÂÂN®BlockStatementÍFÍÃ’T³ExpressionStatementÍQÍ…U®CallExpressionÍQÍ„Z°MemberExpressionÍQÍgMªIdentifierÍQÍ[ªAppStorageMªIdentifierÍ\Íg«SetOrCreateÂÂ’MªIdentifierÍhÍ}µPLAYERBAR_VISIBLE_KEYS§LiteralÍÍƒÃ¤trueÂT³ExpressionStatementÍÍ¼U®CallExpressionÍÍ»Z°MemberExpressionÍÍMªIdentifierÍÍ™ªAppStorageMªIdentifierÍšÍ£SetÂÂ’MªIdentifierÍÍ³µPLAYERBAR_VISIBLE_KEYS§LiteralÍµÍºÂ¥falseÂO°MethodDefinitionÍÉÍ9ÁÂÂMªIdentifierÍÉÍÖ­initialRender¦methodP²FunctionExpressionÍÖÍ9ÁÀÂÂÂN®BlockStatementÍÙÍ9Á”T³ExpressionStatementÍäÍwU®CallExpressionÍäÍvZ°MemberExpressionÍäÍV®ThisExpressionÍäÍèMªIdentifierÍéÍ¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍÍmÀÂÂÂ’MªIdentifierÍÍ
+¦elmtIdMªIdentifierÍÍ¯isInitialRenderN®BlockStatementÍ Ím’T³ExpressionStatementÍ/Í?U®CallExpressionÍ/Í>Z°MemberExpressionÍ/Í<MªIdentifierÍ/Í5¦ColumnMªIdentifierÍ6Í<¦createÂÂÂT³ExpressionStatementÍMÍbU®CallExpressionÍMÍaZ°MemberExpressionÍMÍYMªIdentifierÍMÍS¦ColumnMªIdentifierÍTÍY¥widthÂÂ‘S§LiteralÍZÍ`¤100%¦'100%'ÂMªIdentifierÍoÍu¦ColumnÂT³ExpressionStatementÍÍ9U®CallExpressionÍÍ9Z°MemberExpressionÍÍŸV®ThisExpressionÍÍ…MªIdentifierÍ†ÍŸ¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ Í9ŠÀÂÂÂ’MªIdentifierÍ¡Í§¦elmtIdMªIdentifierÍ©Í¸¯isInitialRenderN®BlockStatementÍ½Í9Š’T³ExpressionStatementÍÌÍØU®CallExpressionÍÌÍ×Z°MemberExpressionÍÌÍÕMªIdentifierÍÌÍÎ¢IfMªIdentifierÍÏÍÕ¦createÂÂÂW«IfStatementÍæÍ9X±LogicalExpressionÍêÍ
+Z°MemberExpressionÍêÍöV®ThisExpressionÍêÍîMªIdentifierÍïÍö§visibleÂÂ¢&&Z°MemberExpressionÍúÍ
+V®ThisExpressionÍúÍşMªIdentifierÍÿÍ
+«currentSongÂÂN®BlockStatementÍÍ7ğ‘T³ExpressionStatementÍÍ7áU®CallExpressionÍÍ7àZ°MemberExpressionÍÍ>V®ThisExpressionÍÍ#MªIdentifierÍ$Í>ºifElseBranchUpdateFunctionÂÂ’S§LiteralÍ?Í@ ¡0P·ArrowFunctionExpressionÍBÍ7ßÀÂÂÂN®BlockStatementÍHÍ7ßÜ T³ExpressionStatementÍ_ÍpU®CallExpressionÍ_ÍoZ°MemberExpressionÍ_Í}V®ThisExpressionÍ_ÍcMªIdentifierÍdÍ}¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ~ÍfÀÂÂÂ’MªIdentifierÍÍ…¦elmtIdMªIdentifierÍ‡Í–¯isInitialRenderN®BlockStatementÍ›Íf“T³ExpressionStatementÍ¶ÍÒU®CallExpressionÍ¶ÍÑZ°MemberExpressionÍ¶ÍÃMªIdentifierÍ¶Í¼¦ColumnMªIdentifierÍ½ÍÃ¦createÂÂ‘\°ObjectExpressionÍÄÍĞ‘Ôrc™¤type¥start£end¦method©shorthand¨computed£key¥value¤kind¨PropertyÍÆÍÎÂÂÂMªIdentifierÍÆÍË¥spaceS§LiteralÍÍÍÎ¡8¤initÂT³ExpressionStatementÍìÍU®CallExpressionÍìÍ Z°MemberExpressionÍìÍøMªIdentifierÍìÍò¦ColumnMªIdentifierÍóÍø¥widthÂÂ‘S§LiteralÍùÍÿ¤100%¦'100%'ÂT³ExpressionStatementÍÍOU®CallExpressionÍÍNZ°MemberExpressionÍÍ)MªIdentifierÍÍ!¦ColumnMªIdentifierÍ"Í)§paddingÂÂ‘\°ObjectExpressionÍ*ÍM“c¨PropertyÍ,Í4ÂÂÂMªIdentifierÍ,Í0¤leftS§LiteralÍ2Í4¢12¤initc¨PropertyÍ6Í?ÂÂÂMªIdentifierÍ6Í;¥rightS§LiteralÍ=Í?¢12¤initc¨PropertyÍAÍKÂÂÂMªIdentifierÍAÍG¦bottomS§LiteralÍIÍK
+¢10¤initÂMªIdentifierÍhÍn¦ColumnÂT³ExpressionStatementÍ†Í3U®CallExpressionÍ†Í2Z°MemberExpressionÍ†Í¤V®ThisExpressionÍ†ÍŠMªIdentifierÍ‹Í¤¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ¥Í,ÀÂÂÂ’MªIdentifierÍ¦Í¬¦elmtIdMªIdentifierÍ®Í½¯isInitialRenderN®BlockStatementÍÂÍ,•T³ExpressionStatementÍİÍ÷U®CallExpressionÍİÍöZ°MemberExpressionÍİÍçMªIdentifierÍİÍà£RowMªIdentifierÍáÍç¦createÂÂ‘\°ObjectExpressionÍèÍõ‘c¨PropertyÍêÍóÂÂÂMªIdentifierÍêÍï¥spaceS§LiteralÍñÍó
+¢10¤initÂT³ExpressionStatementÍÍKU®CallExpressionÍÍJZ°MemberExpressionÍÍMªIdentifierÍÍ£RowMªIdentifierÍÍ§paddingÂÂ‘\°ObjectExpressionÍÍI”c¨PropertyÍÍ'ÂÂÂMªIdentifierÍÍ#¤leftS§LiteralÍ%Í'¢12¤initc¨PropertyÍ)Í2ÂÂÂMªIdentifierÍ)Í.¥rightS§LiteralÍ0Í2¢12¤initc¨PropertyÍ4Í;ÂÂÂMªIdentifierÍ4Í7£topS§LiteralÍ9Í;¢12¤initc¨PropertyÍ=ÍGÂÂÂMªIdentifierÍ=ÍC¦bottomS§LiteralÍEÍG
+¢10¤initÂT³ExpressionStatementÍeÍ†U®CallExpressionÍeÍ…Z°MemberExpressionÍeÍxMªIdentifierÍeÍh£RowMªIdentifierÍiÍx¯backgroundColorÂÂ‘Z°MemberExpressionÍyÍ„MªIdentifierÍyÍ~¥ColorMªIdentifierÍÍ„¥WhiteÂÂÂT³ExpressionStatementÍ ÍµU®CallExpressionÍ Í´Z°MemberExpressionÍ Í°MªIdentifierÍ Í££RowMªIdentifierÍ¤Í°¬borderRadiusÂÂ‘S§LiteralÍ±Í³¢18ÂT³ExpressionStatementÍÏÍU®CallExpressionÍÏÍZ°MemberExpressionÍÏÍÙMªIdentifierÍÏÍÒ£RowMªIdentifierÍÓÍÙ¦shadowÂÂ‘\°ObjectExpressionÍÚÍ”c¨PropertyÍÜÍæÂÂÂMªIdentifierÍÜÍâ¦radiusS§LiteralÍäÍæ¢14¤initc¨PropertyÍèÍùÂÂÂMªIdentifierÍèÍí¥colorS§LiteralÍïÍùÎ"   ª0x22000000¤initc¨PropertyÍûÍÂÂÂMªIdentifierÍûÍ§offsetXS§LiteralÍÍ ¡0¤initc¨PropertyÍÍÂÂÂMªIdentifierÍÍ§offsetYS§LiteralÍÍ¡6¤initÂMªIdentifierÍ.Í1£RowÂT³ExpressionStatementÍIÍ!OU®CallExpressionÍIÍ!NZ°MemberExpressionÍIÍgV®ThisExpressionÍIÍMMªIdentifierÍNÍg¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍhÍ!IÀÂÂÂ’MªIdentifierÍiÍo¦elmtIdMªIdentifierÍqÍ€¯isInitialRenderN®BlockStatementÍ…Í!I’T³ExpressionStatementÍ Í¬U®CallExpressionÍ Í«Z°MemberExpressionÍ Í©MªIdentifierÍ Í¢¢IfMªIdentifierÍ£Í©¦createÂÂÂW«IfStatementÍåÍ!2X±LogicalExpressionÍéÍ*Z°MemberExpressionÍéÍZ°MemberExpressionÍéÍùV®ThisExpressionÍéÍíMªIdentifierÍîÍù«currentSongÂÂMªIdentifierÍúÍ¨coverUrlÂÂ¢&&X°BinaryExpressionÍÍ*Z°MemberExpressionÍÍ&Z°MemberExpressionÍÍZ°MemberExpressionÍÍV®ThisExpressionÍÍ
+MªIdentifierÍÍ«currentSongÂÂMªIdentifierÍÍ¨coverUrlÂÂMªIdentifierÍ Í&¦lengthÂÂ¡>S§LiteralÍ)Í* ¡0N®BlockStatementÍ,Íè‘T³ExpressionStatementÍKÍÍU®CallExpressionÍKÍÌZ°MemberExpressionÍKÍjV®ThisExpressionÍKÍOMªIdentifierÍPÍjºifElseBranchUpdateFunctionÂÂ’S§LiteralÍkÍl ¡0P·ArrowFunctionExpressionÍnÍËÀÂÂÂN®BlockStatementÍtÍË‘T³ExpressionStatementÍ—Í¬U®CallExpressionÍ—Í«Z°MemberExpressionÍ—ÍµV®ThisExpressionÍ—Í›MªIdentifierÍœÍµ¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ¶Í£ÀÂÂÂ’MªIdentifierÍ·Í½¦elmtIdMªIdentifierÍ¿ÍÎ¯isInitialRenderN®BlockStatementÍÓÍ£–T³ExpressionStatementÍúÍ"U®CallExpressionÍúÍ!Z°MemberExpressionÍúÍMªIdentifierÍúÍÿ¥ImageMªIdentifierÍ Í¦createÂÂ‘Z°MemberExpressionÍÍ Z°MemberExpressionÍÍV®ThisExpressionÍÍMªIdentifierÍÍ«currentSongÂÂMªIdentifierÍÍ ¨coverUrlÂÂÂT³ExpressionStatementÍHÍXU®CallExpressionÍHÍWZ°MemberExpressionÍHÍSMªIdentifierÍHÍM¥ImageMªIdentifierÍNÍS¥widthÂÂ‘S§LiteralÍTÍV.¢46ÂT³ExpressionStatementÍ~ÍU®CallExpressionÍ~ÍZ°MemberExpressionÍ~ÍŠMªIdentifierÍ~Íƒ¥ImageMªIdentifierÍ„ÍŠ¦heightÂÂ‘S§LiteralÍ‹Í.¢46ÂT³ExpressionStatementÍµÍÌU®CallExpressionÍµÍËZ°MemberExpressionÍµÍÇMªIdentifierÍµÍº¥ImageMªIdentifierÍ»ÍÇ¬borderRadiusÂÂ‘S§LiteralÍÈÍÊ¢12ÂT³ExpressionStatementÍòÍU®CallExpressionÍòÍZ°MemberExpressionÍòÍMªIdentifierÍòÍ÷¥ImageMªIdentifierÍøÍ©objectFitÂÂ‘Z°MemberExpressionÍÍMªIdentifierÍÍ
+¨ImageFitMªIdentifierÍÍ¥CoverÂÂÂT³ExpressionStatementÍ8Í€U®CallExpressionÍ8ÍZ°MemberExpressionÍ8ÍDMªIdentifierÍ8Í=¥ImageMªIdentifierÍ>ÍD¦shadowÂÂ‘\°ObjectExpressionÍEÍ~”c¨PropertyÍGÍQÂÂÂMªIdentifierÍGÍM¦radiusS§LiteralÍOÍQ
+¢10¤initc¨PropertyÍSÍdÂÂÂMªIdentifierÍSÍX¥colorS§LiteralÍZÍdÎ   ª0x18000000¤initc¨PropertyÍfÍpÂÂÂMªIdentifierÍfÍm§offsetXS§LiteralÍoÍp ¡0¤initc¨PropertyÍrÍ|ÂÂÂMªIdentifierÍrÍy§offsetYS§LiteralÍ{Í|¡4¤initÂMªIdentifierÍ¥Íª¥ImageÂÂN®BlockStatementÍÍ!2‘T³ExpressionStatementÍ&Í!U®CallExpressionÍ&Í!Z°MemberExpressionÍ&ÍEV®ThisExpressionÍ&Í*MªIdentifierÍ+ÍEºifElseBranchUpdateFunctionÂÂ’S§LiteralÍFÍG¡1P·ArrowFunctionExpressionÍIÍ!ÀÂÂÂN®BlockStatementÍOÍ!–T³ExpressionStatementÍrÍ~U®CallExpressionÍrÍ}Z°MemberExpressionÍrÍV®ThisExpressionÍrÍvMªIdentifierÍwÍ¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ‘ÍuÀÂÂÂ’MªIdentifierÍ’Í˜¦elmtIdMªIdentifierÍšÍ©¯isInitialRenderN®BlockStatementÍ®Íu’T³ExpressionStatementÍÕÍäU®CallExpressionÍÕÍãZ°MemberExpressionÍÕÍáMªIdentifierÍÕÍÚ¥StackMªIdentifierÍÛÍá¦createÂÂÂT³ExpressionStatementÍ
+ÍRU®CallExpressionÍ
+ÍQZ°MemberExpressionÍ
+ÍMªIdentifierÍ
+Í¥StackMªIdentifierÍÍ¦shadowÂÂ‘\°ObjectExpressionÍÍP”c¨PropertyÍÍ#ÂÂÂMªIdentifierÍÍ¦radiusS§LiteralÍ!Í#
+¢10¤initc¨PropertyÍ%Í6ÂÂÂMªIdentifierÍ%Í*¥colorS§LiteralÍ,Í6Î   ª0x18000000¤initc¨PropertyÍ8ÍBÂÂÂMªIdentifierÍ8Í?§offsetXS§LiteralÍAÍB ¡0¤initc¨PropertyÍDÍNÂÂÂMªIdentifierÍDÍK§offsetYS§LiteralÍMÍN¡4¤initÂMªIdentifierÍwÍ|¥StackÂT³ExpressionStatementÍ Í4U®CallExpressionÍ Í3Z°MemberExpressionÍ Í¾V®ThisExpressionÍ Í¤MªIdentifierÍ¥Í¾¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ¿Í*ÀÂÂÂ’MªIdentifierÍÀÍÆ¦elmtIdMªIdentifierÍÈÍ×¯isInitialRenderN®BlockStatementÍÜÍ*•T³ExpressionStatementÍÍU®CallExpressionÍÍZ°MemberExpressionÍÍMªIdentifierÍÍ	¦ColumnMªIdentifierÍ
+Í¦createÂÂÂT³ExpressionStatementÍ9ÍJU®CallExpressionÍ9ÍIZ°MemberExpressionÍ9ÍEMªIdentifierÍ9Í?¦ColumnMªIdentifierÍ@ÍE¥widthÂÂ‘S§LiteralÍFÍH.¢46ÂT³ExpressionStatementÍpÍ‚U®CallExpressionÍpÍZ°MemberExpressionÍpÍ}MªIdentifierÍpÍv¦ColumnMªIdentifierÍwÍ}¦heightÂÂ‘S§LiteralÍ~Í€.¢46ÂT³ExpressionStatementÍ¨ÍÀU®CallExpressionÍ¨Í¿Z°MemberExpressionÍ¨Í»MªIdentifierÍ¨Í®¦ColumnMªIdentifierÍ¯Í»¬borderRadiusÂÂ‘S§LiteralÍ¼Í¾¢12ÂT³ExpressionStatementÍæÍU®CallExpressionÍæÍZ°MemberExpressionÍæÍüMªIdentifierÍæÍì¦ColumnMªIdentifierÍíÍü¯backgroundColorÂÂ‘S§LiteralÍıÍÎ îòÿ¨0xEEF2FFÂMªIdentifierÍ,Í2¦ColumnÂT³ExpressionStatementÍVÍcU®CallExpressionÍVÍbZ°MemberExpressionÍVÍ`MªIdentifierÍVÍ\¦ColumnMªIdentifierÍ]Í`£popÂÂÂT³ExpressionStatementÍ…Í ›U®CallExpressionÍ…Í šZ°MemberExpressionÍ…Í£V®ThisExpressionÍ…Í‰MªIdentifierÍŠÍ£¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ¤Í “ÀÂÂÂ’MªIdentifierÍ¥Í«¦elmtIdMªIdentifierÍ­Í¼¯isInitialRenderN®BlockStatementÍÁÍ ““T³ExpressionStatementÍèÍùU®CallExpressionÍèÍøZ°MemberExpressionÍèÍóMªIdentifierÍèÍì¤TextMªIdentifierÍíÍó¦createÂÂ‘S§LiteralÍôÍ÷£â™ª¥'â™ª'ÂT³ExpressionStatementÍ Í 1U®CallExpressionÍ Í 0Z°MemberExpressionÍ Í ,MªIdentifierÍ Í #¤TextMªIdentifierÍ $Í ,¨fontSizeÂÂ‘S§LiteralÍ -Í /¢18ÂT³ExpressionStatementÍ WÍ pU®CallExpressionÍ WÍ oZ°MemberExpressionÍ WÍ eMªIdentifierÍ WÍ [¤TextMªIdentifierÍ \Í e©fontColorÂÂ‘S§LiteralÍ fÍ nÎ )Uÿ¨0x2955FFÂMªIdentifierÍ •Í ™¤TextÂT³ExpressionStatementÍ ½Í ÈU®CallExpressionÍ ½Í ÇZ°MemberExpressionÍ ½Í ÅMªIdentifierÍ ½Í Á¤TextMªIdentifierÍ ÂÍ Å£popÂÂÂT³ExpressionStatementÍ êÍ öU®CallExpressionÍ êÍ õZ°MemberExpressionÍ êÍ óMªIdentifierÍ êÍ ï¥StackMªIdentifierÍ ğÍ ó£popÂÂÂÂMªIdentifierÍ!KÍ!M¢IfÂT³ExpressionStatementÍ!eÍ!nU®CallExpressionÍ!eÍ!mZ°MemberExpressionÍ!eÍ!kMªIdentifierÍ!eÍ!g¢IfMªIdentifierÍ!hÍ!k£popÂÂÂT³ExpressionStatementÍ!„Í$uU®CallExpressionÍ!„Í$tZ°MemberExpressionÍ!„Í!¢V®ThisExpressionÍ!„Í!ˆMªIdentifierÍ!‰Í!¢¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ!£Í$kÀÂÂÂ’MªIdentifierÍ!¤Í!ª¦elmtIdMªIdentifierÍ!¬Í!»¯isInitialRenderN®BlockStatementÍ!ÀÍ$k”T³ExpressionStatementÍ"Í"$U®CallExpressionÍ"Í"#Z°MemberExpressionÍ"Í"MªIdentifierÍ"Í"¦ColumnMªIdentifierÍ"Í"¦createÂÂ‘\°ObjectExpressionÍ"Í""‘c¨PropertyÍ"Í" ÂÂÂMªIdentifierÍ"Í"¥spaceS§LiteralÍ"Í" ¡4¤initÂT³ExpressionStatementÍ"kÍ"‚U®CallExpressionÍ"kÍ"Z°MemberExpressionÍ"kÍ"~MªIdentifierÍ"kÍ"q¦ColumnMªIdentifierÍ"rÍ"~¬layoutWeightÂÂ‘S§LiteralÍ"Í"€¡1ÂT³ExpressionStatementÍ"ÉÍ"òU®CallExpressionÍ"ÉÍ"ñZ°MemberExpressionÍ"ÉÍ"ÚMªIdentifierÍ"ÉÍ"Ï¦ColumnMªIdentifierÍ"ĞÍ"ÚªalignItemsÂÂ‘Z°MemberExpressionÍ"ÛÍ"ğMªIdentifierÍ"ÛÍ"ê¯HorizontalAlignMªIdentifierÍ"ëÍ"ğ¥StartÂÂÂT³ExpressionStatementÍ#9Í$TU®CallExpressionÍ#9Í$SZ°MemberExpressionÍ#9Í#GMªIdentifierÍ#9Í#?¦ColumnMªIdentifierÍ#@Í#G§onClickÂÂ‘P·ArrowFunctionExpressionÍ#HÍ$RÀÂÂÂN®BlockStatementÍ#NÍ$R‘T³ExpressionStatementÍ#—Í#¦U®CallExpressionÍ#—Í#¥Z°MemberExpressionÍ#—Í#£V®ThisExpressionÍ#—Í#›MªIdentifierÍ#œÍ#£§hideBarÂÂÂÂMªIdentifierÍ$mÍ$s¦ColumnÂT³ExpressionStatementÍ$‹Í&<U®CallExpressionÍ$‹Í&;Z°MemberExpressionÍ$‹Í$©V®ThisExpressionÍ$‹Í$MªIdentifierÍ$Í$©¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ$ªÍ&4ÀÂÂÂ’MªIdentifierÍ$«Í$±¦elmtIdMªIdentifierÍ$³Í$Â¯isInitialRenderN®BlockStatementÍ$ÇÍ&4–T³ExpressionStatementÍ$âÍ%U®CallExpressionÍ$âÍ%Z°MemberExpressionÍ$âÍ$íMªIdentifierÍ$âÍ$æ¤TextMªIdentifierÍ$çÍ$í¦createÂÂ‘Z°MemberExpressionÍ$îÍ%Z°MemberExpressionÍ$îÍ$şV®ThisExpressionÍ$îÍ$òMªIdentifierÍ$óÍ$ş«currentSongÂÂMªIdentifierÍ$ÿÍ%¤nameÂÂÂT³ExpressionStatementÍ%Í%1U®CallExpressionÍ%Í%0Z°MemberExpressionÍ%Í%,MªIdentifierÍ%Í%#¤TextMªIdentifierÍ%$Í%,¨fontSizeÂÂ‘S§LiteralÍ%-Í%/¢14ÂT³ExpressionStatementÍ%KÍ%nU®CallExpressionÍ%KÍ%mZ°MemberExpressionÍ%KÍ%ZMªIdentifierÍ%KÍ%O¤TextMªIdentifierÍ%PÍ%ZªfontWeightÂÂ‘Z°MemberExpressionÍ%[Í%lMªIdentifierÍ%[Í%eªFontWeightMªIdentifierÍ%fÍ%l¦MediumÂÂÂT³ExpressionStatementÍ%ˆÍ%¡U®CallExpressionÍ%ˆÍ% Z°MemberExpressionÍ%ˆÍ%–MªIdentifierÍ%ˆÍ%Œ¤TextMªIdentifierÍ%Í%–©fontColorÂÂ‘S§LiteralÍ%—Í%ŸÎ '¨0x111827ÂT³ExpressionStatementÍ%»Í%ÌU®CallExpressionÍ%»Í%ËZ°MemberExpressionÍ%»Í%ÈMªIdentifierÍ%»Í%¿¤TextMªIdentifierÍ%ÀÍ%È¨maxLinesÂÂ‘S§LiteralÍ%ÉÍ%Ê¡1ÂT³ExpressionStatementÍ%æÍ&U®CallExpressionÍ%æÍ&Z°MemberExpressionÍ%æÍ%÷MªIdentifierÍ%æÍ%ê¤TextMªIdentifierÍ%ëÍ%÷¬textOverflowÂÂ‘\°ObjectExpressionÍ%øÍ&‘c¨PropertyÍ%úÍ&ÂÂÂMªIdentifierÍ%úÍ&¨overflowZ°MemberExpressionÍ&Í&MªIdentifierÍ&Í&¬TextOverflowMªIdentifierÍ&Í&¨EllipsisÂÂ¤initÂMªIdentifierÍ&6Í&:¤TextÂT³ExpressionStatementÍ&RÍ&]U®CallExpressionÍ&RÍ&\Z°MemberExpressionÍ&RÍ&ZMªIdentifierÍ&RÍ&V¤TextMªIdentifierÍ&WÍ&Z£popÂÂÂT³ExpressionStatementÍ&sÍ'íU®CallExpressionÍ&sÍ'ìZ°MemberExpressionÍ&sÍ&‘V®ThisExpressionÍ&sÍ&wMªIdentifierÍ&xÍ&‘¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ&’Í'åÀÂÂÂ’MªIdentifierÍ&“Í&™¦elmtIdMªIdentifierÍ&›Í&ª¯isInitialRenderN®BlockStatementÍ&¯Í'å•T³ExpressionStatementÍ&ÊÍ&óU®CallExpressionÍ&ÊÍ&òZ°MemberExpressionÍ&ÊÍ&ÕMªIdentifierÍ&ÊÍ&Î¤TextMªIdentifierÍ&ÏÍ&Õ¦createÂÂ‘Z°MemberExpressionÍ&ÖÍ&ñZ°MemberExpressionÍ&ÖÍ&æV®ThisExpressionÍ&ÖÍ&ÚMªIdentifierÍ&ÛÍ&æ«currentSongÂÂMªIdentifierÍ&çÍ&ñªartistNameÂÂÂT³ExpressionStatementÍ'Í'U®CallExpressionÍ'Í'Z°MemberExpressionÍ'Í'MªIdentifierÍ'Í'¤TextMªIdentifierÍ'Í'¨fontSizeÂÂ‘S§LiteralÍ'Í'¢12ÂT³ExpressionStatementÍ'9Í'RU®CallExpressionÍ'9Í'QZ°MemberExpressionÍ'9Í'GMªIdentifierÍ'9Í'=¤TextMªIdentifierÍ'>Í'G©fontColorÂÂ‘S§LiteralÍ'HÍ'PÎ kr€¨0x6B7280ÂT³ExpressionStatementÍ'lÍ'}U®CallExpressionÍ'lÍ'|Z°MemberExpressionÍ'lÍ'yMªIdentifierÍ'lÍ'p¤TextMªIdentifierÍ'qÍ'y¨maxLinesÂÂ‘S§LiteralÍ'zÍ'{¡1ÂT³ExpressionStatementÍ'—Í'ÎU®CallExpressionÍ'—Í'ÍZ°MemberExpressionÍ'—Í'¨MªIdentifierÍ'—Í'›¤TextMªIdentifierÍ'œÍ'¨¬textOverflowÂÂ‘\°ObjectExpressionÍ'©Í'Ì‘c¨PropertyÍ'«Í'ÊÂÂÂMªIdentifierÍ'«Í'³¨overflowZ°MemberExpressionÍ'µÍ'ÊMªIdentifierÍ'µÍ'Á¬TextOverflowMªIdentifierÍ'ÂÍ'Ê¨EllipsisÂÂ¤initÂMªIdentifierÍ'çÍ'ë¤TextÂT³ExpressionStatementÍ(Í(U®CallExpressionÍ(Í(Z°MemberExpressionÍ(Í(MªIdentifierÍ(Í(¤TextMªIdentifierÍ(Í(£popÂÂÂT³ExpressionStatementÍ(MÍ(ZU®CallExpressionÍ(MÍ(YZ°MemberExpressionÍ(MÍ(WMªIdentifierÍ(MÍ(S¦ColumnMªIdentifierÍ(TÍ(W£popÂÂÂT³ExpressionStatementÍ(‘Í(ÒU®CallExpressionÍ(‘Í(ÑU®CallExpressionÍ(‘Í(©Z°MemberExpressionÍ(‘Í(£MªIdentifierÍ(‘Í(­PlayerBtnLeftMªIdentifierÍ(ŸÍ(£¤bindÂÂ‘V®ThisExpressionÍ(¤Í(¨Â’Z°MemberExpressionÍ(ªÍ(¹V®ThisExpressionÍ(ªÍ(®MªIdentifierÍ(¯Í(¹ªisPlayableÂÂP·ArrowFunctionExpressionÍ(»Í(ĞÀÂÂÂN®BlockStatementÍ(ÁÍ(Ğ‘T³ExpressionStatementÍ(ÃÍ(ÎU®CallExpressionÍ(ÃÍ(ÍMªIdentifierÍ(ÃÍ(Ë¨playPrevÂÂT³ExpressionStatementÍ(èÍ+“U®CallExpressionÍ(èÍ+’Z°MemberExpressionÍ(èÍ)V®ThisExpressionÍ(èÍ(ìMªIdentifierÍ(íÍ)¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ)Í+ÀÂÂÂ’MªIdentifierÍ)Í)¦elmtIdMªIdentifierÍ)Í)¯isInitialRenderN®BlockStatementÍ)$Í+’T³ExpressionStatementÍ)?Í)KU®CallExpressionÍ)?Í)JZ°MemberExpressionÍ)?Í)HMªIdentifierÍ)?Í)A¢IfMªIdentifierÍ)BÍ)H¦createÂÂÂW«IfStatementÍ)eÍ+vZ°MemberExpressionÍ)iÍ)wV®ThisExpressionÍ)iÍ)mMªIdentifierÍ)nÍ)w©isPlayingÂÂN®BlockStatementÍ)yÍ*g‘T³ExpressionStatementÍ)˜Í*LU®CallExpressionÍ)˜Í*KZ°MemberExpressionÍ)˜Í)·V®ThisExpressionÍ)˜Í)œMªIdentifierÍ)Í)·ºifElseBranchUpdateFunctionÂÂ’S§LiteralÍ)¸Í)¹ ¡0P·ArrowFunctionExpressionÍ)»Í*JÀÂÂÂN®BlockStatementÍ)ÁÍ*J‘T³ExpressionStatementÍ)äÍ*+U®CallExpressionÍ)äÍ**U®CallExpressionÍ)äÍ)ûZ°MemberExpressionÍ)äÍ)õMªIdentifierÍ)äÍ)ğ¬PlayerBtnEndMªIdentifierÍ)ñÍ)õ¤bindÂÂ‘V®ThisExpressionÍ)öÍ)úÂ’Z°MemberExpressionÍ)üÍ*V®ThisExpressionÍ)üÍ* MªIdentifierÍ*Í*ªisPlayableÂÂP·ArrowFunctionExpressionÍ*Í*)ÀÂÂÂN®BlockStatementÍ*Í*)‘T³ExpressionStatementÍ*Í*'U®CallExpressionÍ*Í*&MªIdentifierÍ*Í*$¯togglePlayPauseÂÂÂN®BlockStatementÍ*†Í+v‘T³ExpressionStatementÍ*¥Í+[U®CallExpressionÍ*¥Í+ZZ°MemberExpressionÍ*¥Í*ÄV®ThisExpressionÍ*¥Í*©MªIdentifierÍ*ªÍ*ÄºifElseBranchUpdateFunctionÂÂ’S§LiteralÍ*ÅÍ*Æ¡1P·ArrowFunctionExpressionÍ*ÈÍ+YÀÂÂÂN®BlockStatementÍ*ÎÍ+Y‘T³ExpressionStatementÍ*ñÍ+:U®CallExpressionÍ*ñÍ+9U®CallExpressionÍ*ñÍ+
+Z°MemberExpressionÍ*ñÍ+MªIdentifierÍ*ñÍ*ÿ®PlayerBtnBeginMªIdentifierÍ+ Í+¤bindÂÂ‘V®ThisExpressionÍ+Í+	Â’Z°MemberExpressionÍ+Í+V®ThisExpressionÍ+Í+MªIdentifierÍ+Í+ªisPlayableÂÂP·ArrowFunctionExpressionÍ+Í+8ÀÂÂÂN®BlockStatementÍ+"Í+8‘T³ExpressionStatementÍ+$Í+6U®CallExpressionÍ+$Í+5MªIdentifierÍ+$Í+3¯togglePlayPauseÂÂÂMªIdentifierÍ+Í+‘¢IfÂT³ExpressionStatementÍ+©Í+²U®CallExpressionÍ+©Í+±Z°MemberExpressionÍ+©Í+¯MªIdentifierÍ+©Í+«¢IfMªIdentifierÍ+¬Í+¯£popÂÂÂT³ExpressionStatementÍ+ÈÍ,
+U®CallExpressionÍ+ÈÍ,	U®CallExpressionÍ+ÈÍ+áZ°MemberExpressionÍ+ÈÍ+ÛMªIdentifierÍ+ÈÍ+Ö®PlayerBtnRightMªIdentifierÍ+×Í+Û¤bindÂÂ‘V®ThisExpressionÍ+ÜÍ+àÂ’Z°MemberExpressionÍ+âÍ+ñV®ThisExpressionÍ+âÍ+æMªIdentifierÍ+çÍ+ñªisPlayableÂÂP·ArrowFunctionExpressionÍ+óÍ,ÀÂÂÂN®BlockStatementÍ+ùÍ,‘T³ExpressionStatementÍ+ûÍ,U®CallExpressionÍ+ûÍ,MªIdentifierÍ+ûÍ,¨playNextÂÂT³ExpressionStatementÍ, Í,*U®CallExpressionÍ, Í,)Z°MemberExpressionÍ, Í,'MªIdentifierÍ, Í,#£RowMªIdentifierÍ,$Í,'£popÂÂÂT³ExpressionStatementÍ,@Í3?U®CallExpressionÍ,@Í3>Z°MemberExpressionÍ,@Í,^V®ThisExpressionÍ,@Í,DMªIdentifierÍ,EÍ,^¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ,_Í35ÀÂÂÂ’MªIdentifierÍ,`Í,f¦elmtIdMªIdentifierÍ,hÍ,w¯isInitialRenderN®BlockStatementÍ,|Í35•T³ExpressionStatementÍ,½Í-°U®CallExpressionÍ,½Í-¯Z°MemberExpressionÍ,½Í,ÊMªIdentifierÍ,½Í,Ã¦SliderMªIdentifierÍ,ÄÍ,Ê¦createÂÂ‘\°ObjectExpressionÍ,ËÍ-®“c¨PropertyÍ,êÍ-!ÂÂÂMªIdentifierÍ,êÍ,ï¥valueWµConditionalExpressionÍ,ñÍ-!Z°MemberExpressionÍ,ñÍ,şV®ThisExpressionÍ,ñÍ,õMªIdentifierÍ,öÍ,ş¨draggingÂÂZ°MemberExpressionÍ-Í-V®ThisExpressionÍ-Í-MªIdentifierÍ-Í-©dragValueÂÂZ°MemberExpressionÍ-Í-!V®ThisExpressionÍ-Í-MªIdentifierÍ-Í-!ªpositionMsÂÂ¤initc¨PropertyÍ-@Í-FÂÂÂMªIdentifierÍ-@Í-C£minS§LiteralÍ-EÍ-F ¡0¤initc¨PropertyÍ-eÍ-“ÂÂÂMªIdentifierÍ-eÍ-h£maxWµConditionalExpressionÍ-jÍ-“X°BinaryExpressionÍ-jÍ-}Z°MemberExpressionÍ-jÍ-yV®ThisExpressionÍ-jÍ-nMªIdentifierÍ-oÍ-yªdurationMsÂÂ¡>S§LiteralÍ-|Í-} ¡0Z°MemberExpressionÍ-€Í-V®ThisExpressionÍ-€Í-„MªIdentifierÍ-…Í-ªdurationMsÂÂS§LiteralÍ-’Í-“¡1¤initÂT³ExpressionStatementÍ-ğÍ.U®CallExpressionÍ-ğÍ.Z°MemberExpressionÍ-ğÍ-ıMªIdentifierÍ-ğÍ-ö¦SliderMªIdentifierÍ-÷Í-ı¦heightÂÂ‘S§LiteralÍ-şÍ. ¢28ÂT³ExpressionStatementÍ.BÍ.uU®CallExpressionÍ.BÍ.tZ°MemberExpressionÍ.BÍ.PMªIdentifierÍ.BÍ.H¦SliderMªIdentifierÍ.IÍ.P§enabledÂÂ‘X±LogicalExpressionÍ.QÍ.sZ°MemberExpressionÍ.QÍ.`V®ThisExpressionÍ.QÍ.UMªIdentifierÍ.VÍ.`ªisPlayableÂÂ¢&&R¯UnaryExpressionÍ.dÍ.s¡!ÃZ°MemberExpressionÍ.eÍ.sV®ThisExpressionÍ.eÍ.iMªIdentifierÍ.jÍ.s©isLoadingÂÂÂT³ExpressionStatementÍ.µÍ/¼U®CallExpressionÍ.µÍ/»Z°MemberExpressionÍ.µÍ.ÄMªIdentifierÍ.µÍ.»¦SliderMªIdentifierÍ.¼Í.Ä¨onChangeÂÂ‘P·ArrowFunctionExpressionÍ.ÅÍ/ºÀÂÂÂ‘MªIdentifierÍ.ÆÍ.Ç¡vN®BlockStatementÍ.ÌÍ/º“W«IfStatementÍ.ëÍ/;X±LogicalExpressionÍ.ïÍ/R¯UnaryExpressionÍ.ïÍ.ÿ¡!ÃZ°MemberExpressionÍ.ğÍ.ÿV®ThisExpressionÍ.ğÍ.ôMªIdentifierÍ.õÍ.ÿªisPlayableÂÂ¢||Z°MemberExpressionÍ/Í/V®ThisExpressionÍ/Í/MªIdentifierÍ/Í/©isLoadingÂÂ]¯ReturnStatementÍ/4Í/;ÀÀT³ExpressionStatementÍ/YÍ/nY´AssignmentExpressionÍ/YÍ/m¡=Z°MemberExpressionÍ/YÍ/fV®ThisExpressionÍ/YÍ/]MªIdentifierÍ/^Í/f¨draggingÂÂS§LiteralÍ/iÍ/mÃ¤trueT³ExpressionStatementÍ/ŒÍ/ŸY´AssignmentExpressionÍ/ŒÍ/¡=Z°MemberExpressionÍ/ŒÍ/šV®ThisExpressionÍ/ŒÍ/MªIdentifierÍ/‘Í/š©dragValueÂÂMªIdentifierÍ/Í/¡vÂT³ExpressionStatementÍ/üÍ3U®CallExpressionÍ/üÍ3Z°MemberExpressionÍ/üÍ0
+MªIdentifierÍ/üÍ0¦SliderMªIdentifierÍ0Í0
+§onTouchÂÂ‘P·ArrowFunctionExpressionÍ0Í3ÀÂÂÂ‘MªIdentifierÍ0Í0¡eN®BlockStatementÍ0Í3’W«IfStatementÍ01Í0X±LogicalExpressionÍ05Í0WR¯UnaryExpressionÍ05Í0E¡!ÃZ°MemberExpressionÍ06Í0EV®ThisExpressionÍ06Í0:MªIdentifierÍ0;Í0EªisPlayableÂÂ¢||Z°MemberExpressionÍ0IÍ0WV®ThisExpressionÍ0IÍ0MMªIdentifierÍ0NÍ0W©isLoadingÂÂ]¯ReturnStatementÍ0zÍ0ÀÀW«IfStatementÍ0ŸÍ3X°BinaryExpressionÍ0£Í0¼Z°MemberExpressionÍ0£Í0©MªIdentifierÍ0£Í0¤¡eMªIdentifierÍ0¥Í0©¤typeÂÂ£===Z°MemberExpressionÍ0®Í0¼MªIdentifierÍ0®Í0·©TouchTypeMªIdentifierÍ0¸Í0¼¤DownÂÂN®BlockStatementÍ0¾Í1X’T³ExpressionStatementÍ0áÍ0öY´AssignmentExpressionÍ0áÍ0õ¡=Z°MemberExpressionÍ0áÍ0îV®ThisExpressionÍ0áÍ0åMªIdentifierÍ0æÍ0î¨draggingÂÂS§LiteralÍ0ñÍ0õÃ¤trueT³ExpressionStatementÍ1Í19Y´AssignmentExpressionÍ1Í18¡=Z°MemberExpressionÍ1Í1&V®ThisExpressionÍ1Í1MªIdentifierÍ1Í1&©dragValueÂÂZ°MemberExpressionÍ1)Í18V®ThisExpressionÍ1)Í1-MªIdentifierÍ1.Í18ªpositionMsÂÂW«IfStatementÍ1{Í3X±LogicalExpressionÍ1Í1µX°BinaryExpressionÍ1Í1–Z°MemberExpressionÍ1Í1…MªIdentifierÍ1Í1€¡eMªIdentifierÍ1Í1…¤typeÂÂ£===Z°MemberExpressionÍ1ŠÍ1–MªIdentifierÍ1ŠÍ1“©TouchTypeMªIdentifierÍ1”Í1–¢UpÂÂ¢||X°BinaryExpressionÍ1šÍ1µZ°MemberExpressionÍ1šÍ1 MªIdentifierÍ1šÍ1›¡eMªIdentifierÍ1œÍ1 ¤typeÂÂ£===Z°MemberExpressionÍ1¥Í1µMªIdentifierÍ1¥Í1®©TouchTypeMªIdentifierÍ1¯Í1µ¦CancelÂÂN®BlockStatementÍ1·Í3”^³VariableDeclarationÍ1ÚÍ2‘_²VariableDeclaratorÍ1àÍ2MªIdentifierÍ1àÍ1ã£maxWµConditionalExpressionÍ1æÍ2X°BinaryExpressionÍ1æÍ1ùZ°MemberExpressionÍ1æÍ1õV®ThisExpressionÍ1æÍ1êMªIdentifierÍ1ëÍ1õªdurationMsÂÂ¡>S§LiteralÍ1øÍ1ù ¡0Z°MemberExpressionÍ1üÍ2V®ThisExpressionÍ1üÍ2 MªIdentifierÍ2Í2ªdurationMsÂÂZ°MemberExpressionÍ2Í2V®ThisExpressionÍ2Í2MªIdentifierÍ2Í2©dragValueÂÂ¥const^³VariableDeclarationÍ2?Í2y‘_²VariableDeclaratorÍ2EÍ2xMªIdentifierÍ2EÍ2K¦targetU®CallExpressionÍ2NÍ2xZ°MemberExpressionÍ2NÍ2VMªIdentifierÍ2NÍ2R¤MathMªIdentifierÍ2SÍ2V£maxÂÂ’S§LiteralÍ2WÍ2X ¡0U®CallExpressionÍ2ZÍ2wZ°MemberExpressionÍ2ZÍ2bMªIdentifierÍ2ZÍ2^¤MathMªIdentifierÍ2_Í2b£minÂÂ’Z°MemberExpressionÍ2cÍ2qV®ThisExpressionÍ2cÍ2gMªIdentifierÍ2hÍ2q©dragValueÂÂMªIdentifierÍ2sÍ2v£maxÂÂ¥constT³ExpressionStatementÍ2›Í2±Y´AssignmentExpressionÍ2›Í2°¡=Z°MemberExpressionÍ2›Í2¨V®ThisExpressionÍ2›Í2ŸMªIdentifierÍ2 Í2¨¨draggingÂÂS§LiteralÍ2«Í2°Â¥falseT³ExpressionStatementÍ2ÓÍ2âU®CallExpressionÍ2ÓÍ2áMªIdentifierÍ2ÓÍ2Ù¦seekTo‘MªIdentifierÍ2ÚÍ2à¦targetÂÀÂMªIdentifierÍ37Í3=¦SliderÂT³ExpressionStatementÍ3UÍ4U®CallExpressionÍ3UÍ4Z°MemberExpressionÍ3UÍ3sV®ThisExpressionÍ3UÍ3YMªIdentifierÍ3ZÍ3s¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ3tÍ4ÀÂÂÂ’MªIdentifierÍ3uÍ3{¦elmtIdMªIdentifierÍ3}Í3Œ¯isInitialRenderN®BlockStatementÍ3‘Í4’T³ExpressionStatementÍ3¬Í3¹U®CallExpressionÍ3¬Í3¸Z°MemberExpressionÍ3¬Í3¶MªIdentifierÍ3¬Í3¯£RowMªIdentifierÍ3°Í3¶¦createÂÂÂT³ExpressionStatementÍ3ÓÍ3öU®CallExpressionÍ3ÓÍ3õZ°MemberExpressionÍ3ÓÍ3ŞMªIdentifierÍ3ÓÍ3Ö£RowMªIdentifierÍ3×Í3Ş§paddingÂÂ‘\°ObjectExpressionÍ3ßÍ3ô’c¨PropertyÍ3áÍ3èÂÂÂMªIdentifierÍ3áÍ3å¤leftS§LiteralÍ3çÍ3è¡6¤initc¨PropertyÍ3êÍ3òÂÂÂMªIdentifierÍ3êÍ3ï¥rightS§LiteralÍ3ñÍ3ò¡6¤initÂMªIdentifierÍ4Í4£RowÂT³ExpressionStatementÍ4*Í5GU®CallExpressionÍ4*Í5FZ°MemberExpressionÍ4*Í4HV®ThisExpressionÍ4*Í4.MªIdentifierÍ4/Í4H¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ4IÍ5?ÀÂÂÂ’MªIdentifierÍ4JÍ4P¦elmtIdMªIdentifierÍ4RÍ4a¯isInitialRenderN®BlockStatementÍ4fÍ5?“T³ExpressionStatementÍ4Í4ÉU®CallExpressionÍ4Í4ÈZ°MemberExpressionÍ4Í4ŒMªIdentifierÍ4Í4…¤TextMªIdentifierÍ4†Í4Œ¦createÂÂ‘U®CallExpressionÍ4Í4ÇZ°MemberExpressionÍ4Í4•V®ThisExpressionÍ4Í4‘MªIdentifierÍ4’Í4•£fmtÂÂ‘WµConditionalExpressionÍ4–Í4ÆZ°MemberExpressionÍ4–Í4£V®ThisExpressionÍ4–Í4šMªIdentifierÍ4›Í4£¨draggingÂÂZ°MemberExpressionÍ4¦Í4´V®ThisExpressionÍ4¦Í4ªMªIdentifierÍ4«Í4´©dragValueÂÂZ°MemberExpressionÍ4·Í4ÆV®ThisExpressionÍ4·Í4»MªIdentifierÍ4¼Í4ÆªpositionMsÂÂÂÂT³ExpressionStatementÍ4ãÍ4õU®CallExpressionÍ4ãÍ4ôZ°MemberExpressionÍ4ãÍ4ğMªIdentifierÍ4ãÍ4ç¤TextMªIdentifierÍ4èÍ4ğ¨fontSizeÂÂ‘S§LiteralÍ4ñÍ4ó¢11ÂT³ExpressionStatementÍ5Í5(U®CallExpressionÍ5Í5'Z°MemberExpressionÍ5Í5MªIdentifierÍ5Í5¤TextMªIdentifierÍ5Í5©fontColorÂÂ‘S§LiteralÍ5Í5&Î kr€¨0x6B7280ÂMªIdentifierÍ5AÍ5E¤TextÂT³ExpressionStatementÍ5]Í5hU®CallExpressionÍ5]Í5gZ°MemberExpressionÍ5]Í5eMªIdentifierÍ5]Í5a¤TextMªIdentifierÍ5bÍ5e£popÂÂÂT³ExpressionStatementÍ5~Í64U®CallExpressionÍ5~Í63Z°MemberExpressionÍ5~Í5œV®ThisExpressionÍ5~Í5‚MªIdentifierÍ5ƒÍ5œ¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ5Í6+ÀÂÂÂ’MªIdentifierÍ5Í5¤¦elmtIdMªIdentifierÍ5¦Í5µ¯isInitialRenderN®BlockStatementÍ5ºÍ6+’T³ExpressionStatementÍ5ÕÍ5äU®CallExpressionÍ5ÕÍ5ãZ°MemberExpressionÍ5ÕÍ5áMªIdentifierÍ5ÕÍ5Ú¥BlankMªIdentifierÍ5ÛÍ5á¦createÂÂÂT³ExpressionStatementÍ5şÍ6U®CallExpressionÍ5şÍ6Z°MemberExpressionÍ5şÍ6MªIdentifierÍ5şÍ6¥BlankMªIdentifierÍ6Í6¬layoutWeightÂÂ‘S§LiteralÍ6Í6¡1ÂMªIdentifierÍ6-Í62¥BlankÂT³ExpressionStatementÍ6JÍ6VU®CallExpressionÍ6JÍ6UZ°MemberExpressionÍ6JÍ6SMªIdentifierÍ6JÍ6O¥BlankMªIdentifierÍ6PÍ6S£popÂÂÂT³ExpressionStatementÍ6lÍ7hU®CallExpressionÍ6lÍ7gZ°MemberExpressionÍ6lÍ6ŠV®ThisExpressionÍ6lÍ6pMªIdentifierÍ6qÍ6Š¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ6‹Í7`ÀÂÂÂ’MªIdentifierÍ6ŒÍ6’¦elmtIdMªIdentifierÍ6”Í6£¯isInitialRenderN®BlockStatementÍ6¨Í7`“T³ExpressionStatementÍ6ÃÍ6êU®CallExpressionÍ6ÃÍ6éZ°MemberExpressionÍ6ÃÍ6ÎMªIdentifierÍ6ÃÍ6Ç¤TextMªIdentifierÍ6ÈÍ6Î¦createÂÂ‘U®CallExpressionÍ6ÏÍ6èZ°MemberExpressionÍ6ÏÍ6×V®ThisExpressionÍ6ÏÍ6ÓMªIdentifierÍ6ÔÍ6×£fmtÂÂ‘Z°MemberExpressionÍ6ØÍ6çV®ThisExpressionÍ6ØÍ6ÜMªIdentifierÍ6İÍ6çªdurationMsÂÂÂÂT³ExpressionStatementÍ7Í7U®CallExpressionÍ7Í7Z°MemberExpressionÍ7Í7MªIdentifierÍ7Í7¤TextMªIdentifierÍ7	Í7¨fontSizeÂÂ‘S§LiteralÍ7Í7¢11ÂT³ExpressionStatementÍ70Í7IU®CallExpressionÍ70Í7HZ°MemberExpressionÍ70Í7>MªIdentifierÍ70Í74¤TextMªIdentifierÍ75Í7>©fontColorÂÂ‘S§LiteralÍ7?Í7GÎ kr€¨0x6B7280ÂMªIdentifierÍ7bÍ7f¤TextÂT³ExpressionStatementÍ7~Í7‰U®CallExpressionÍ7~Í7ˆZ°MemberExpressionÍ7~Í7†MªIdentifierÍ7~Í7‚¤TextMªIdentifierÍ7ƒÍ7†£popÂÂÂT³ExpressionStatementÍ7ŸÍ7©U®CallExpressionÍ7ŸÍ7¨Z°MemberExpressionÍ7ŸÍ7¦MªIdentifierÍ7ŸÍ7¢£RowMªIdentifierÍ7£Í7¦£popÂÂÂT³ExpressionStatementÍ7¿Í7ÌU®CallExpressionÍ7¿Í7ËZ°MemberExpressionÍ7¿Í7ÉMªIdentifierÍ7¿Í7Å¦ColumnMªIdentifierÍ7ÆÍ7É£popÂÂÂÂN®BlockStatementÍ8Í9‘T³ExpressionStatementÍ8Í9pU®CallExpressionÍ8Í9oZ°MemberExpressionÍ8Í85V®ThisExpressionÍ8Í8MªIdentifierÍ8Í85ºifElseBranchUpdateFunctionÂÂ’S§LiteralÍ86Í87¡1P·ArrowFunctionExpressionÍ89Í9nÀÂÂÂN®BlockStatementÍ8?Í9n’T³ExpressionStatementÍ8VÍ98U®CallExpressionÍ8VÍ97Z°MemberExpressionÍ8VÍ8tV®ThisExpressionÍ8VÍ8ZMªIdentifierÍ8[Í8t¹observeComponentCreation2ÂÂ’P·ArrowFunctionExpressionÍ8uÍ9.ÀÂÂÂ’MªIdentifierÍ8vÍ8|¦elmtIdMªIdentifierÍ8~Í8¯isInitialRenderN®BlockStatementÍ8’Í9.“T³ExpressionStatementÍ8­Í8½U®CallExpressionÍ8­Í8¼Z°MemberExpressionÍ8­Í8ºMªIdentifierÍ8­Í8³¦ColumnMªIdentifierÍ8´Í8º¦createÂÂÂT³ExpressionStatementÍ8×Í8ìU®CallExpressionÍ8×Í8ëZ°MemberExpressionÍ8×Í8ãMªIdentifierÍ8×Í8İ¦ColumnMªIdentifierÍ8ŞÍ8ã¥widthÂÂ‘S§LiteralÍ8äÍ8ê¤100%¦'100%'ÂT³ExpressionStatementÍ9Í9U®CallExpressionÍ9Í9Z°MemberExpressionÍ9Í9MªIdentifierÍ9Í9¦ColumnMªIdentifierÍ9Í9¦heightÂÂ‘S§LiteralÍ9Í9 ¡0ÂMªIdentifierÍ90Í96¦ColumnÂT³ExpressionStatementÍ9NÍ9[U®CallExpressionÍ9NÍ9ZZ°MemberExpressionÍ9NÍ9XMªIdentifierÍ9NÍ9T¦ColumnMªIdentifierÍ9UÍ9X£popÂÂÂÂMªIdentifierÍ9ŒÍ9¢IfÂT³ExpressionStatementÍ9šÍ9£U®CallExpressionÍ9šÍ9¢Z°MemberExpressionÍ9šÍ9 MªIdentifierÍ9šÍ9œ¢IfMªIdentifierÍ9Í9 £popÂÂÂT³ExpressionStatementÍ9­Í9ºU®CallExpressionÍ9­Í9¹Z°MemberExpressionÍ9­Í9·MªIdentifierÍ9­Í9³¦ColumnMªIdentifierÍ9´Í9·£popÂÂÂO°MethodDefinitionÍ9ÇÍ9ÿÂÂMªIdentifierÍ9ÇÍ9Ï¨rerender¦methodP²FunctionExpressionÍ9ÏÍ9ÿÀÂÂÂN®BlockStatementÍ9ÒÍ9ÿ‘T³ExpressionStatementÍ9İÍ9øU®CallExpressionÍ9İÍ9÷Z°MemberExpressionÍ9İÍ9õV®ThisExpressionÍ9İÍ9áMªIdentifierÍ9âÍ9õ³updateDirtyElementsÂÂÂÀ“Ôrd•¤type¥start£endªspecifiers¦source±ImportDeclarationÌ€Í•Ôre•¤type¥start£end¨imported¥local¯ImportSpecifierÌ‰Ì˜MªIdentifierÌ‰Ì˜¯PLAYER_SONG_KEYMªIdentifierÌ‰Ì˜¯PLAYER_SONG_KEYe¯ImportSpecifierÌšÌ¬MªIdentifierÌšÌ¬²PLAYER_PLAYING_KEYMªIdentifierÌšÌ¬²PLAYER_PLAYING_KEYe¯ImportSpecifierÌ®ÌÄMªIdentifierÌ®ÌÄ¶PLAYER_POSITION_MS_KEYMªIdentifierÌ®ÌÄ¶PLAYER_POSITION_MS_KEYe¯ImportSpecifierÌÆÌÜMªIdentifierÌÆÌÜ¶PLAYER_DURATION_MS_KEYMªIdentifierÌÆÌÜ¶PLAYER_DURATION_MS_KEYe¯ImportSpecifierÌŞÌóMªIdentifierÌŞÌóµPLAYERBAR_VISIBLE_KEYMªIdentifierÌŞÌóµPLAYERBAR_VISIBLE_KEYS§LiteralÌûÍ¶../service/PlayerState¸'../service/PlayerState'd±ImportDeclarationÍÍ†•e¯ImportSpecifierÍÍ%MªIdentifierÍÍ%¦seekToMªIdentifierÍÍ%¦seekToe¯ImportSpecifierÍ'Í6MªIdentifierÍ'Í6¯togglePlayPauseMªIdentifierÍ'Í6¯togglePlayPausee¯ImportSpecifierÍ8Í@MªIdentifierÍ8Í@¨playPrevMªIdentifierÍ8Í@¨playPreve¯ImportSpecifierÍBÍJMªIdentifierÍBÍJ¨playNextMªIdentifierÍBÍJ¨playNexte¯ImportSpecifierÍLÍ^MªIdentifierÍLÍ^²PLAYER_LOADING_KEYMªIdentifierÍLÍ^²PLAYER_LOADING_KEYS§LiteralÍfÍ…½../service/AudioPlayerService¿'../service/AudioPlayerService'd±ImportDeclarationÍˆÍã”e¯ImportSpecifierÍ‘ÍMªIdentifierÍ‘Í­PlayerBtnLeftMªIdentifierÍ‘Í­PlayerBtnLefte¯ImportSpecifierÍ Í®MªIdentifierÍ Í®®PlayerBtnRightMªIdentifierÍ Í®®PlayerBtnRighte¯ImportSpecifierÍ°Í¾MªIdentifierÍ°Í¾®PlayerBtnBeginMªIdentifierÍ°Í¾®PlayerBtnBegine¯ImportSpecifierÍÀÍÌMªIdentifierÍÀÍÌ¬PlayerBtnEndMªIdentifierÍÀÍÌ¬PlayerBtnEndS§LiteralÍÔÍâ¬../common/UI®'../common/UI'

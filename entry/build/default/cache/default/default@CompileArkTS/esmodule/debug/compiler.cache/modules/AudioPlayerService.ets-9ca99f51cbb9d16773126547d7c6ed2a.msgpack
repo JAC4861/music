@@ -1,0 +1,719 @@
+Ôr@Ÿªassertions¤code´customTransformCache¬dependencies¢id¤meta±moduleSideEffects¬originalCode±originalSourcemap«resolvedIds®sourcemapChainµsyntheticNamedExportsµtransformDependencies®transformFiles¨cacheAstÔrAÚ&]import media from '@ohos.multimedia.media';
+import { setCurrentSong, setPlaying, setPositionMs, setDurationMs, PLAYER_SPEED_KEY } from './PlayerState';
+import { PreferencesStore } from './PreferencesStore';
+export const PLAYER_LOADING_KEY = 'PLAYER_IS_LOADING';
+export const PLAYER_QUEUE_KEY = 'PLAYER_QUEUE_KEY'; // UI å¯è¯»ï¼šåªå­˜ songId åˆ—è¡¨ï¼ˆè½»é‡ï¼‰
+export const PLAYER_INDEX_KEY = 'PLAYER_INDEX_KEY'; // UI å¯è¯»ï¼šå½“å‰ index
+let opChain = Promise.resolve(); // é‡æ“ä½œï¼šplaySong åˆ‡æ­Œé“¾è·¯
+let controlChain = Promise.resolve(); // è½»æ“ä½œï¼špause/resume/seek/speed
+let avPlayer = undefined;
+let playerState = 'idle';
+let playSeq = 0;
+// æ—¶é—´å•ä½
+let timeUnit = 'ms';
+// ====== æ’­æ”¾é˜Ÿåˆ—ï¼ˆæ”¾å†…å­˜é‡Œæ›´ç¨³ï¼‰ ======
+let playQueue = [];
+let playIndex = 0;
+function normalizeUrl(url) {
+    if (url.startsWith('http://'))
+        return 'https://' + url.substring('http://'.length);
+    return url;
+}
+function normalizeToMs(v) {
+    if (v > 10000000) {
+        timeUnit = 'us';
+        return Math.floor(v / 1000);
+    }
+    timeUnit = 'ms';
+    return v;
+}
+function msToPlayerUnit(ms) {
+    if (timeUnit === 'us')
+        return ms * 1000;
+    return ms;
+}
+function sleep(ms) {
+    return new Promise((r) => setTimeout(() => r(), ms));
+}
+function enqueue(op) {
+    opChain = opChain.then(op).catch(() => {
+        console.error('[AudioPlayerService] opChain error');
+    });
+    return opChain;
+}
+function enqueueControl(op) {
+    controlChain = controlChain.then(op).catch(() => {
+        console.error('[AudioPlayerService] controlChain error');
+    });
+    return controlChain;
+}
+function setLoading(loading) {
+    AppStorage.SetOrCreate(PLAYER_LOADING_KEY, false);
+    AppStorage.Set(PLAYER_LOADING_KEY, loading);
+}
+function toStoredSong(song, fixedUrl) {
+    return { id: song.id, name: song.name, artistName: song.artistName, coverUrl: song.coverUrl, url: fixedUrl };
+}
+function buildSongWithUrl(song, fixedUrl) {
+    return {
+        id: song.id,
+        name: song.name,
+        artistName: song.artistName,
+        coverUrl: song.coverUrl,
+        durationSec: song.durationSec,
+        url: fixedUrl
+    };
+}
+async function createPlayer() {
+    const p = await media.createAVPlayer();
+    playerState = 'idle';
+    p.on('durationUpdate', (d) => {
+        console.info('[AudioPlayerService] durationUpdate raw=' + d);
+        setDurationMs(normalizeToMs(d));
+    });
+    p.on('timeUpdate', (t) => {
+        setPositionMs(normalizeToMs(t));
+    });
+    p.on('stateChange', (state) => {
+        playerState = state;
+        console.info('[AudioPlayerService] state=' + state + ', seq=' + playSeq);
+    });
+    avPlayer = p;
+    return p;
+}
+async function releasePlayer() {
+    if (!avPlayer)
+        return;
+    try {
+        if (playerState === 'playing') {
+            await avPlayer.pause();
+            await sleep(40);
+        }
+    }
+    catch (_) {
+        // ignore
+    }
+    try {
+        await avPlayer.stop();
+    }
+    catch (_) {
+        // ignore
+    }
+    try {
+        await avPlayer.release();
+    }
+    catch (_) {
+        // ignore
+    }
+    avPlayer = undefined;
+    playerState = 'released';
+}
+async function recreatePlayerWithBackoff() {
+    await releasePlayer();
+    await sleep(350); // å…³é”®é€€é¿
+    return await createPlayer();
+}
+async function playOnFreshPlayer(url, seq) {
+    const p = await recreatePlayerWithBackoff();
+    if (seq !== playSeq)
+        return;
+    console.info('[AudioPlayerService] set url: ' + url);
+    p.url = url;
+    await sleep(120);
+    if (seq !== playSeq)
+        return;
+    await p.prepare();
+    if (seq !== playSeq)
+        return;
+    // åº”ç”¨å€é€Ÿï¼ˆå¦‚æœç”¨æˆ·è®¾ç½®è¿‡ï¼‰
+    try {
+        const rate = AppStorage.Get(PLAYER_SPEED_KEY) ?? 1.0;
+        await p.setSpeed(rateToPlaybackSpeed(rate));
+    }
+    catch (_) {
+        // ignore
+    }
+    await p.play();
+}
+function syncQueueToAppStorage() {
+    // AppStorage é‡Œåªå­˜è½»é‡ä¿¡æ¯ï¼Œé¿å… Song[] å¤ªå¤§å¯¼è‡´é—®é¢˜
+    const ids = [];
+    for (let i = 0; i < playQueue.length; i++) {
+        ids.push(playQueue[i].id);
+    }
+    AppStorage.SetOrCreate(PLAYER_QUEUE_KEY, []);
+    AppStorage.Set(PLAYER_QUEUE_KEY, ids);
+    AppStorage.SetOrCreate(PLAYER_INDEX_KEY, 0);
+    AppStorage.Set(PLAYER_INDEX_KEY, playIndex);
+}
+// ====== å¯¹å¤–ï¼šæ’­æ”¾ä¸€é¦–ï¼ˆä¿ç•™ä½ ç°æœ‰é€»è¾‘ï¼‰ ======
+export function playSong(song) {
+    return enqueue(async () => {
+        const seq = ++playSeq;
+        if (!song.url || song.url.length === 0) {
+            setCurrentSong(song);
+            setPlaying(false);
+            return;
+        }
+        const finalUrl = normalizeUrl(song.url);
+        console.info('[AudioPlayerService] playSong songId=' + song.id + ' url=' + finalUrl + ', seq=' + seq);
+        setCurrentSong(buildSongWithUrl(song, finalUrl));
+        setPositionMs(0);
+        setDurationMs(0);
+        // è‹¥æ¥å£ä¸ç»™ durationUpdateï¼Œä¹Ÿèƒ½å…ˆæ˜¾ç¤ºæ—¶é•¿ï¼ˆå¯é€‰ä½†å»ºè®®ï¼‰
+        if (song.durationSec > 0) {
+            setDurationMs(song.durationSec * 1000);
+        }
+        setLoading(true);
+        try {
+            try {
+                await PreferencesStore.addRecentSong(toStoredSong(song, finalUrl));
+            }
+            catch (_) {
+                console.error('[AudioPlayerService] addRecentSong error');
+            }
+            await playOnFreshPlayer(finalUrl, seq);
+            if (seq === playSeq)
+                setPlaying(true);
+        }
+        catch (_) {
+            console.error('[AudioPlayerService] playSong failed');
+            setPlaying(false);
+        }
+        finally {
+            if (seq === playSeq)
+                setLoading(false);
+        }
+    });
+}
+// ====== æ§åˆ¶ç±»ï¼šä¸èµ° opChainï¼Œé¿å…å¡é¡¿ ======
+export function pause() {
+    return enqueueControl(async () => {
+        if (!avPlayer)
+            return;
+        try {
+            await avPlayer.pause();
+            setPlaying(false);
+        }
+        catch (_) {
+            console.error('[AudioPlayerService] pause failed');
+        }
+    });
+}
+export function resume() {
+    return enqueueControl(async () => {
+        if (!avPlayer)
+            return;
+        try {
+            await avPlayer.play();
+            setPlaying(true);
+        }
+        catch (_) {
+            console.error('[AudioPlayerService] resume failed');
+            setPlaying(false);
+        }
+    });
+}
+export function seekTo(ms) {
+    return enqueueControl(async () => {
+        if (!avPlayer)
+            return;
+        if (!(playerState === 'prepared' || playerState === 'playing' || playerState === 'paused' || playerState === 'completed')) {
+            console.warn('[AudioPlayerService] seek ignored in state=' + playerState);
+            return;
+        }
+        try {
+            const v = msToPlayerUnit(ms);
+            await avPlayer.seek(v);
+            setPositionMs(ms);
+        }
+        catch (_) {
+            console.error('[AudioPlayerService] seek failed');
+        }
+    });
+}
+export async function togglePlayPause() {
+    const playingValue = AppStorage.Get('PLAYER_IS_PLAYING');
+    const playing = playingValue ?? false;
+    if (playing)
+        await pause();
+    else
+        await resume();
+}
+export function toggleFavorite(song) {
+    const fixedUrl = normalizeUrl(song.url);
+    return PreferencesStore.toggleFavorite(toStoredSong(song, fixedUrl));
+}
+// ====== é˜Ÿåˆ—ï¼šè®¾ç½®é˜Ÿåˆ— & å½“å‰ç´¢å¼• ======
+export function setPlayQueue(queue, index) {
+    playQueue = queue;
+    if (playQueue.length === 0) {
+        playIndex = 0;
+    }
+    else {
+        playIndex = Math.max(0, Math.min(index, playQueue.length - 1));
+    }
+    syncQueueToAppStorage();
+}
+// å¯é€‰ï¼šå¯¹å¤–æä¾›å½“å‰é˜Ÿåˆ—ä¿¡æ¯ï¼ˆç»™ UI è°ƒè¯•ï¼‰
+export function getPlayQueueLength() {
+    return playQueue.length;
+}
+// ====== ä¸Šä¸€é¦–/ä¸‹ä¸€é¦– ======
+// è¯´æ˜ï¼šå¸¸è§éŸ³ä¹ App é»˜è®¤å¾ªç¯é˜Ÿåˆ—ï¼›ä½ å¦‚æœä¸æƒ³å¾ªç¯ï¼ŒæŠŠ wrap å»æ‰å³å¯
+export async function playPrev() {
+    if (playQueue.length === 0)
+        return;
+    if (playIndex <= 0)
+        playIndex = playQueue.length - 1;
+    else
+        playIndex -= 1;
+    syncQueueToAppStorage();
+    await playSong(playQueue[playIndex]);
+}
+export async function playNext() {
+    if (playQueue.length === 0)
+        return;
+    if (playIndex >= playQueue.length - 1)
+        playIndex = 0;
+    else
+        playIndex += 1;
+    syncQueueToAppStorage();
+    await playSong(playQueue[playIndex]);
+}
+// ====== å€é€Ÿï¼ˆä½ åŸæœ‰é€»è¾‘ä¿ç•™å¹¶ä¿®æ­£ ArkTS catchï¼‰ ======
+function ensureSpeedKeyCreated() {
+    AppStorage.SetOrCreate(PLAYER_SPEED_KEY, 1.0);
+}
+function rateToPlaybackSpeed(rate) {
+    if (rate === 0.75)
+        return media.PlaybackSpeed.SPEED_FORWARD_0_75_X;
+    if (rate === 1.25)
+        return media.PlaybackSpeed.SPEED_FORWARD_1_25_X;
+    if (rate === 1.75)
+        return media.PlaybackSpeed.SPEED_FORWARD_1_75_X;
+    if (rate === 2.0)
+        return media.PlaybackSpeed.SPEED_FORWARD_2_00_X;
+    return media.PlaybackSpeed.SPEED_FORWARD_1_00_X;
+}
+export function setPlaybackRate(rate) {
+    ensureSpeedKeyCreated();
+    // å€é€Ÿå±äºæ§åˆ¶ç±»ï¼šèµ° controlChain
+    return enqueueControl(async () => {
+        AppStorage.Set(PLAYER_SPEED_KEY, rate);
+        if (!avPlayer)
+            return;
+        try {
+            await avPlayer.setSpeed(rateToPlaybackSpeed(rate));
+        }
+        catch (_) {
+            console.error('[AudioPlayerService] setPlaybackRate failed');
+        }
+    });
+}
+//# sourceMappingURL=AudioPlayerService.js.mapÂ“Ùe hvigor_ignore_F:_biancheng_DevEco Studio_sdk_default_openharmony_ets_api_@ohos.multimedia.media.d.tsÙEF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PlayerState.etsÙJF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PreferencesStore.etsÙLF:\DevEco_sdk\music_classs\entry\src\main\ets\service\AudioPlayerService.etsÔrBœªmoduleName±isLocalDependency¯isNodeEntryFile§pkgPath±belongProjectPath§pkgNameªpkgVersion±dependencyPkgInfo¯hostModulesInfo°belongModulePath§checker¬shouldEmitJs¥entryÃÂÙ F:\DevEco_sdk\music_classs\entryºF:\DevEco_sdk\music_classs¥entry¥1.0.0Ô  •ÔrC’²hostDependencyName®hostModuleName½../service/AudioPlayerService¥entryC½../service/AudioPlayerService¥entryCÙ ../../service/AudioPlayerService¥entryC½../service/AudioPlayerService¥entryCÙ ../../service/AudioPlayerService¥entryÙ F:\DevEco_sdk\music_classs\entryÔrDÜ ®¬getNodeCount²getIdentifierCount®getSymbolCount¬getTypeCountµgetInstantiationCountµgetRelationCacheSizes±isUndefinedSymbol±isArgumentsSymbol¯isUnknownSymbol¯getMergedSymbol®getDiagnostics´getGlobalDiagnostics´getRecursionIdentity¶getUnmatchedProperties¹getTypeOfSymbolAtLocation¯getTypeOfSymbolÙ(getSymbolsOfParameterPropertyDeclaration·getDeclaredTypeOfSymbol³getPropertiesOfType±getPropertyOfTypeÙ"getPrivateIdentifierPropertyOfType·getTypeOfPropertyOfType²getIndexInfoOfType³getIndexInfosOfTypeºgetIndexInfosOfIndexSymbol³getSignaturesOfType²getIndexTypeOfType¬getIndexType¬getBaseTypes¸getBaseTypeOfLiteralType®getWidenedType³getTypeFromTypeNode°getParameterTypeÙ$getParameterIdentifierNameAtPosition¸getPromisedTypeOfPromise®getAwaitedType¸getReturnTypeOfSignature®isNullableType¯getNullableType²getNonNullableType²getNonOptionalType°getTypeArguments®typeToTypeNodeÙ$indexInfoToIndexSignatureDeclaration¿signatureToSignatureDeclaration²symbolToEntityName²symbolToExpression¬symbolToNodeÙ!symbolToTypeParameterDeclarations¼symbolToParameterDeclarationºtypeParameterToDeclaration±getSymbolsInScope³getSymbolAtLocation·getIndexInfosAtLocationÙ!getShorthandAssignmentValueSymbolÙ#getExportSpecifierLocalTargetSymbol·getExportSymbolOfSymbol±getTypeAtLocationÙ tryGetTypeAtLocationWithoutCheckºgetTypeOfAssignmentPatternÙ*getPropertySymbolOfDestructuringAssignment±signatureToString¬typeToString®symbolToStringµtypePredicateToString®writeSignature©writeType«writeSymbol²writeTypePredicate¼getAugmentedPropertiesOfType®getRootSymbols²getSymbolOfExpando±getContextualTypeÙ(getContextualTypeForObjectLiteralElementÙ#getContextualTypeForArgumentAtIndexÙ getContextualTypeForJsxAttribute²isContextSensitiveÙ!getTypeOfPropertyOfContextualTypeµgetFullyQualifiedNameÙ#tryGetResolvedSignatureWithoutCheck´getResolvedSignatureÙ/getResolvedSignatureForStringLiteralCompletionsÙ$getResolvedSignatureForSignatureHelpµgetExpandedParameters¹hasEffectiveRestParameterºcontainsArgumentsReference°getConstantValueµisValidPropertyAccessÙ#isValidPropertyAccessForCompletions»getSignatureFromDeclarationºisImplementationOfOverload¹getImmediateAliasedSymbol°getAliasedSymbol¯getEmitResolver²getExportsOfModule¿getExportsAndPropertiesOfModuleÙ forEachExportAndPropertyOfModule¯getSymbolWalker±getAmbientModules¹getJsxIntrinsicTagNamesAt³isOptionalParameter»tryGetMemberInModuleExportsÙ(tryGetMemberInModuleExportsAndProperties´tryFindAmbientModuleÙ(tryFindAmbientModuleWithoutAugmentations¯getApparentType¬getUnionType²isTypeAssignableTo³createAnonymousType¯createSignature¬createSymbol¯createIndexInfoªgetAnyType­getStringType­getNumberType±createPromiseType¯createArrayType¹getElementTypeOfArrayType®getBooleanType¬getFalseType«getTrueType«getVoidType°getUndefinedType«getNullType¯getESSymbolType¬getNeverType¯getOptionalType®getPromiseType²getPromiseLikeType´getAsyncIterableType²isSymbolAccessible«isArrayType«isTupleType¯isArrayLikeTypeÙ#isTypeInvalidDueToUnionDiscriminantºgetExactOptionalProperties¿getAllPossiblePropertiesOfTypesÙ(getSuggestedSymbolForNonexistentPropertyÙ#getSuggestionForNonexistentPropertyÙ,getSuggestedSymbolForNonexistentJSXAttributeÙ&getSuggestedSymbolForNonexistentSymbolÙ!getSuggestionForNonexistentSymbolÙ&getSuggestedSymbolForNonexistentModuleÙ!getSuggestionForNonexistentExportÙ+getSuggestedSymbolForNonexistentClassMember·getBaseConstraintOfType»getDefaultFromTypeParameter«resolveName¯getJsxNamespaceµgetJsxFragmentFactory¸getAccessibleSymbolChain»getTypePredicateOfSignature¹resolveExternalModuleName»resolveExternalModuleSymbol°tryGetThisTypeAt¹getTypeArgumentConstraint¸getSuggestionDiagnostics¸runWithCancellationTokenÙ3getLocalTypeParametersOfClassOrInterfaceOrTypeAlias´isDeclarationVisible´isPropertyAccessible»getTypeOnlyAliasDeclaration¿getMemberOverrideModifierStatusÙ!isTypeParameterPossiblyReferenced²getConstEnumRelate´clearConstEnumRelateµdeleteConstEnumRelateÙ$getTypeArgumentsForResolvedSignatureµgetCheckedSourceFilesÙ"collectHaveTsNoCheckFilesForLinter·clearQualifiedNameCache®isStaticRecord²isStaticSourceFile³createIntrinsicTypeÔ  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  Ô  ÃÃÚ&import media from '@ohos.multimedia.media';
+import { Song } from './ApiService';
+import { setCurrentSong, setPlaying, setPositionMs, setDurationMs, PLAYER_SPEED_KEY } from './PlayerState';
+import { PreferencesStore, StoredSong } from './PreferencesStore';
+
+export const PLAYER_LOADING_KEY = 'PLAYER_IS_LOADING';
+export const PLAYER_QUEUE_KEY = 'PLAYER_QUEUE_KEY'; // UI å¯è¯»ï¼šåªå­˜ songId åˆ—è¡¨ï¼ˆè½»é‡ï¼‰
+export const PLAYER_INDEX_KEY = 'PLAYER_INDEX_KEY'; // UI å¯è¯»ï¼šå½“å‰ index
+
+let opChain: Promise<void> = Promise.resolve();        // é‡æ“ä½œï¼šplaySong åˆ‡æ­Œé“¾è·¯
+let controlChain: Promise<void> = Promise.resolve();   // è½»æ“ä½œï¼špause/resume/seek/speed
+
+let avPlayer: media.AVPlayer | undefined = undefined;
+let playerState: string = 'idle';
+let playSeq: number = 0;
+
+// æ—¶é—´å•ä½
+let timeUnit: string = 'ms';
+
+// ====== æ’­æ”¾é˜Ÿåˆ—ï¼ˆæ”¾å†…å­˜é‡Œæ›´ç¨³ï¼‰ ======
+let playQueue: Song[] = [];
+let playIndex: number = 0;
+
+function normalizeUrl(url: string): string {
+  if (url.startsWith('http://')) return 'https://' + url.substring('http://'.length);
+  return url;
+}
+
+function normalizeToMs(v: number): number {
+  if (v > 10_000_000) {
+    timeUnit = 'us';
+    return Math.floor(v / 1000);
+  }
+  timeUnit = 'ms';
+  return v;
+}
+
+function msToPlayerUnit(ms: number): number {
+  if (timeUnit === 'us') return ms * 1000;
+  return ms;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((r) => setTimeout(() => r(), ms));
+}
+
+function enqueue(op: () => Promise<void>): Promise<void> {
+  opChain = opChain.then(op).catch(() => {
+    console.error('[AudioPlayerService] opChain error');
+  });
+  return opChain;
+}
+
+function enqueueControl(op: () => Promise<void>): Promise<void> {
+  controlChain = controlChain.then(op).catch(() => {
+    console.error('[AudioPlayerService] controlChain error');
+  });
+  return controlChain;
+}
+
+function setLoading(loading: boolean) {
+  AppStorage.SetOrCreate<boolean>(PLAYER_LOADING_KEY, false);
+  AppStorage.Set<boolean>(PLAYER_LOADING_KEY, loading);
+}
+
+function toStoredSong(song: Song, fixedUrl: string): StoredSong {
+  return { id: song.id, name: song.name, artistName: song.artistName, coverUrl: song.coverUrl, url: fixedUrl };
+}
+
+function buildSongWithUrl(song: Song, fixedUrl: string): Song {
+  return {
+    id: song.id,
+    name: song.name,
+    artistName: song.artistName,
+    coverUrl: song.coverUrl,
+    durationSec: song.durationSec,
+    url: fixedUrl
+  };
+}
+
+async function createPlayer(): Promise<media.AVPlayer> {
+  const p = await media.createAVPlayer();
+  playerState = 'idle';
+
+  p.on('durationUpdate', (d: number) => {
+    console.info('[AudioPlayerService] durationUpdate raw=' + d);
+    setDurationMs(normalizeToMs(d));
+  });
+
+  p.on('timeUpdate', (t: number) => {
+    setPositionMs(normalizeToMs(t));
+  });
+
+  p.on('stateChange', (state: string) => {
+    playerState = state;
+    console.info('[AudioPlayerService] state=' + state + ', seq=' + playSeq);
+  });
+
+  avPlayer = p;
+  return p;
+}
+
+async function releasePlayer(): Promise<void> {
+  if (!avPlayer) return;
+
+  try {
+    if (playerState === 'playing') {
+      await avPlayer.pause();
+      await sleep(40);
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  try {
+    await avPlayer.stop();
+  } catch (_) {
+    // ignore
+  }
+
+  try {
+    await avPlayer.release();
+  } catch (_) {
+    // ignore
+  }
+
+  avPlayer = undefined;
+  playerState = 'released';
+}
+
+async function recreatePlayerWithBackoff(): Promise<media.AVPlayer> {
+  await releasePlayer();
+  await sleep(350); // å…³é”®é€€é¿
+  return await createPlayer();
+}
+
+async function playOnFreshPlayer(url: string, seq: number): Promise<void> {
+  const p = await recreatePlayerWithBackoff();
+  if (seq !== playSeq) return;
+
+  console.info('[AudioPlayerService] set url: ' + url);
+  p.url = url;
+
+  await sleep(120);
+  if (seq !== playSeq) return;
+
+  await p.prepare();
+  if (seq !== playSeq) return;
+
+  // åº”ç”¨å€é€Ÿï¼ˆå¦‚æœç”¨æˆ·è®¾ç½®è¿‡ï¼‰
+  try {
+    const rate = AppStorage.Get<number>(PLAYER_SPEED_KEY) ?? 1.0;
+    await p.setSpeed(rateToPlaybackSpeed(rate));
+  } catch (_) {
+    // ignore
+  }
+
+  await p.play();
+}
+
+function syncQueueToAppStorage() {
+  // AppStorage é‡Œåªå­˜è½»é‡ä¿¡æ¯ï¼Œé¿å… Song[] å¤ªå¤§å¯¼è‡´é—®é¢˜
+  const ids: number[] = [];
+  for (let i = 0; i < playQueue.length; i++) {
+    ids.push(playQueue[i].id);
+  }
+
+  AppStorage.SetOrCreate<number[]>(PLAYER_QUEUE_KEY, [] as number[]);
+  AppStorage.Set<number[]>(PLAYER_QUEUE_KEY, ids);
+
+  AppStorage.SetOrCreate<number>(PLAYER_INDEX_KEY, 0);
+  AppStorage.Set<number>(PLAYER_INDEX_KEY, playIndex);
+}
+
+// ====== å¯¹å¤–ï¼šæ’­æ”¾ä¸€é¦–ï¼ˆä¿ç•™ä½ ç°æœ‰é€»è¾‘ï¼‰ ======
+export function playSong(song: Song): Promise<void> {
+  return enqueue(async () => {
+    const seq = ++playSeq;
+
+    if (!song.url || song.url.length === 0) {
+      setCurrentSong(song);
+      setPlaying(false);
+      return;
+    }
+
+    const finalUrl = normalizeUrl(song.url);
+
+    console.info('[AudioPlayerService] playSong songId=' + song.id + ' url=' + finalUrl + ', seq=' + seq);
+
+    setCurrentSong(buildSongWithUrl(song, finalUrl));
+    setPositionMs(0);
+    setDurationMs(0);
+
+    // è‹¥æ¥å£ä¸ç»™ durationUpdateï¼Œä¹Ÿèƒ½å…ˆæ˜¾ç¤ºæ—¶é•¿ï¼ˆå¯é€‰ä½†å»ºè®®ï¼‰
+    if (song.durationSec > 0) {
+      setDurationMs(song.durationSec * 1000);
+    }
+
+    setLoading(true);
+    try {
+      try {
+        await PreferencesStore.addRecentSong(toStoredSong(song, finalUrl));
+      } catch (_) {
+        console.error('[AudioPlayerService] addRecentSong error');
+      }
+
+      await playOnFreshPlayer(finalUrl, seq);
+
+      if (seq === playSeq) setPlaying(true);
+    } catch (_) {
+      console.error('[AudioPlayerService] playSong failed');
+      setPlaying(false);
+    } finally {
+      if (seq === playSeq) setLoading(false);
+    }
+  });
+}
+
+// ====== æ§åˆ¶ç±»ï¼šä¸èµ° opChainï¼Œé¿å…å¡é¡¿ ======
+export function pause(): Promise<void> {
+  return enqueueControl(async () => {
+    if (!avPlayer) return;
+    try {
+      await avPlayer.pause();
+      setPlaying(false);
+    } catch (_) {
+      console.error('[AudioPlayerService] pause failed');
+    }
+  });
+}
+
+export function resume(): Promise<void> {
+  return enqueueControl(async () => {
+    if (!avPlayer) return;
+    try {
+      await avPlayer.play();
+      setPlaying(true);
+    } catch (_) {
+      console.error('[AudioPlayerService] resume failed');
+      setPlaying(false);
+    }
+  });
+}
+
+export function seekTo(ms: number): Promise<void> {
+  return enqueueControl(async () => {
+    if (!avPlayer) return;
+
+    if (!(playerState === 'prepared' || playerState === 'playing' || playerState === 'paused' || playerState === 'completed')) {
+      console.warn('[AudioPlayerService] seek ignored in state=' + playerState);
+      return;
+    }
+
+    try {
+      const v = msToPlayerUnit(ms);
+      await avPlayer.seek(v);
+      setPositionMs(ms);
+    } catch (_) {
+      console.error('[AudioPlayerService] seek failed');
+    }
+  });
+}
+
+export async function togglePlayPause(): Promise<void> {
+  const playingValue = AppStorage.Get<boolean>('PLAYER_IS_PLAYING');
+  const playing: boolean = playingValue ?? false;
+  if (playing) await pause();
+  else await resume();
+}
+
+export function toggleFavorite(song: Song): Promise<boolean> {
+  const fixedUrl = normalizeUrl(song.url);
+  return PreferencesStore.toggleFavorite(toStoredSong(song, fixedUrl));
+}
+
+// ====== é˜Ÿåˆ—ï¼šè®¾ç½®é˜Ÿåˆ— & å½“å‰ç´¢å¼• ======
+export function setPlayQueue(queue: Song[], index: number): void {
+  playQueue = queue;
+  if (playQueue.length === 0) {
+    playIndex = 0;
+  } else {
+    playIndex = Math.max(0, Math.min(index, playQueue.length - 1));
+  }
+  syncQueueToAppStorage();
+}
+
+// å¯é€‰ï¼šå¯¹å¤–æä¾›å½“å‰é˜Ÿåˆ—ä¿¡æ¯ï¼ˆç»™ UI è°ƒè¯•ï¼‰
+export function getPlayQueueLength(): number {
+  return playQueue.length;
+}
+
+// ====== ä¸Šä¸€é¦–/ä¸‹ä¸€é¦– ======
+// è¯´æ˜ï¼šå¸¸è§éŸ³ä¹ App é»˜è®¤å¾ªç¯é˜Ÿåˆ—ï¼›ä½ å¦‚æœä¸æƒ³å¾ªç¯ï¼ŒæŠŠ wrap å»æ‰å³å¯
+export async function playPrev(): Promise<void> {
+  if (playQueue.length === 0) return;
+
+  if (playIndex <= 0) playIndex = playQueue.length - 1;
+  else playIndex -= 1;
+
+  syncQueueToAppStorage();
+  await playSong(playQueue[playIndex]);
+}
+
+export async function playNext(): Promise<void> {
+  if (playQueue.length === 0) return;
+
+  if (playIndex >= playQueue.length - 1) playIndex = 0;
+  else playIndex += 1;
+
+  syncQueueToAppStorage();
+  await playSong(playQueue[playIndex]);
+}
+
+// ====== å€é€Ÿï¼ˆä½ åŸæœ‰é€»è¾‘ä¿ç•™å¹¶ä¿®æ­£ ArkTS catchï¼‰ ======
+function ensureSpeedKeyCreated() {
+  AppStorage.SetOrCreate<number>(PLAYER_SPEED_KEY, 1.0);
+}
+
+function rateToPlaybackSpeed(rate: number): media.PlaybackSpeed {
+  if (rate === 0.75) return media.PlaybackSpeed.SPEED_FORWARD_0_75_X;
+  if (rate === 1.25) return media.PlaybackSpeed.SPEED_FORWARD_1_25_X;
+  if (rate === 1.75) return media.PlaybackSpeed.SPEED_FORWARD_1_75_X;
+  if (rate === 2.0) return media.PlaybackSpeed.SPEED_FORWARD_2_00_X;
+  return media.PlaybackSpeed.SPEED_FORWARD_1_00_X;
+}
+
+export function setPlaybackRate(rate: number): Promise<void> {
+  ensureSpeedKeyCreated();
+
+  // å€é€Ÿå±äºæ§åˆ¶ç±»ï¼šèµ° controlChain
+  return enqueueControl(async () => {
+    AppStorage.Set<number>(PLAYER_SPEED_KEY, rate);
+    if (!avPlayer) return;
+
+    try {
+      await avPlayer.setSpeed(rateToPlaybackSpeed(rate));
+    } catch (_) {
+      console.error('[AudioPlayerService] setPlaybackRate failed');
+    }
+  });
+}ÀÔrE“¶@ohos.multimedia.media²./PreferencesStore­./PlayerStateÔrF—ªassertions¨external¢id¤meta±moduleSideEffectsªresolvedByµsyntheticNamedExportsAÃÙe hvigor_ignore_F:_biancheng_DevEco Studio_sdk_default_openharmony_ets_api_@ohos.multimedia.media.d.tsÔrG‘¯hostModulesInfo‘C¶@ohos.multimedia.media¥entryÃªoh-resolveÂFAÂÙJF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PreferencesStore.etsAÃªoh-resolveÂFAÂÙEF:\DevEco_sdk\music_classs\entry\src\main\ets\service\PlayerState.etsAÃªoh-resolveÂ“ÔrH–§version¤fileªsourceRoot§sources¥names¨mappingsµAudioPlayerService.js ‘¶AudioPlayerService.etsÜ9–”    ”  ”  ”  ”*  *”+  +Ü ”   ” ”	 	” ” ”# #”% %”2 2”4 4”ÌA ÌA”ÌC ÌC”ÌS ÌS”ÌU ÌU”Ì[ Ì[”Ìj Ìj”Ìk Ìk˜”   ” ”	 	” ” '”! -”5 ÌA”6 ÌB˜”   ” ” ” ” ”" "”5 5”6 6š”   ” ” ” ” ”   ”2 2”3 3”4 4”ÌM ÌMš”   ” ” ” ” ”   ”2 2”3 3”4 4”ÌE ÌE›”  	 ” 	” 	” 	” 	$” 	%” 	,” 	.”  	/”! 	7”5 	ÌK›”  
+ ” 
+” 
+” 
+"” 
+)” 
+*”" 
+1”$ 
+3”% 
+4”& 
+7”ÌD 
+ÌU–”   ” ” ” +” 4” 5–”   ” ” ” ”  ” !–”   ” ” ” ” ” ’”   ” –”   ” ” ” ” ” ’”   ” –”   ” ” ” ” ” –”   ” ” ” ” ” •”   ”	 	” ” ” !˜” ” ” 	” 
+” ” ”  ”! ” !” (” 2” 5” 8”  9”) ÌB”* ÌC”3 ÌL”4 ÌM”: ÌS”; ÌT”< ÌU”” ” 	” ” ’”   ” •”   ”	 	” ” ”  –” ” ”	 ” 
+” ” •” ” ” ” ” ›” ” ” ” ” ” ” ” ”" ”# ”$  ‘”  •” !” !
+” !” !” !”” "” "	” "
+” "’”  # ” #•”  % ”	 %	” %” %” %"•” &” &” &” &” &–” &” & ” &"” &%” &)” &*”” '” '	” '” '’”  ( ” (•”  * ”	 *	” *” *” *Ü ” +” +	” +” +” +” +” +” +” +!” +"”( +,”) +-”, +0”. +2”/ +3”0 +4”2 +6”4 +8”6 +:”7 +;”8 +<”9 +=’”  , ” ,•”  . ”	 .	” .” .” .(” /” /	” /” /” /” /” /” /” /” /”$ /"”% /#”( /&”* /(˜” 0” 0” 0” 0” 0”: 06”; 07”< 08”” 1” 1” 1” 1”” 2” 2	” 2” 2’”  3 ” 3•”  5 ”	 5	” 5” 5” 5/” 6” 6” 6” 6”  6”$ 6"”% 6#”' 6%”( 6&”) 6'”. 6,”/ 6-”2 60”4 62˜” 7” 7” 7” 7” 7”? 7;”Ì@ 7<”ÌA 7=”” 8” 8” 8” 8”” 9” 9	” 9” 9’”  : ” :•”  < ”	 <	” <” <” <$š” =” =” =” =” ="”- =4”/ =6”4 =;”5 =<”6 ==š” >” >” >” >” >”% >,”' >.”. >5”/ >6”0 >7’”  ? ” ?—”  ÌA ”	 ÌA	” ÌA” ÌA” ÌA ” ÌA"”$ ÌA2Ü  ” ÌB” ÌB	” ÌB” ÌB” ÌB” ÌB” ÌB” ÌB” ÌB” ÌB”  ÌB”$ ÌB"”% ÌB#”) ÌB'”+ ÌB)”5 ÌB3”7 ÌB5”; ÌB9”< ÌB:”ÌF ÌBÌD”ÌH ÌBÌF”ÌP ÌBÌN”ÌR ÌBÌP”ÌV ÌBÌT”ÌW ÌBÌU”Ì_ ÌBÌ]”Ìa ÌBÌ_”Ìd ÌBÌb”Ìf ÌBÌd”Ìn ÌBÌl”Ìp ÌBÌn”Ìq ÌBÌo’”  ÌC ” ÌC—”  ÌE ”	 ÌE	” ÌE” ÌE” ÌE$”  ÌE&”( ÌE6’” ÌF” ÌF	–” ÌG”
+ ÌG” ÌG” ÌG” ÌG” ÌG–” ÌH” ÌH” ÌH
+” ÌH” ÌH” ÌH–” ÌI” ÌI” ÌI” ÌI” ÌI”# ÌI–” ÌJ” ÌJ” ÌJ” ÌJ” ÌJ” ÌJ–” ÌK” ÌK” ÌK” ÌK” ÌK”% ÌK!”” ÌL” ÌL” ÌL	” ÌL’” ÌM” ÌM’”  ÌN ” ÌN””  ÌP ” ÌP” ÌP” ÌPš” ÌQ”
+ ÌQ” ÌQ	” ÌQ” ÌQ” ÌQ” ÌQ”( ÌQ&”* ÌQ(”+ ÌQ)•” ÌR” ÌR” ÌR” ÌR” ÌR›” ÌT” ÌT” ÌT” ÌT”	 ÌT” ÌT” ÌT” ÌT” ÌT#” ÌT%”! ÌT'š” ÌU” ÌU” ÌU” ÌU” ÌU”? ÌU;”ÌB ÌU>”ÌC ÌU?”ÌD ÌUÌ@”ÌE ÌUÌA™” ÌV” ÌV” ÌV”# ÌV”$ ÌV ”% ÌV!”& ÌV"”' ÌV#”( ÌV$”” ÌW” ÌW” ÌW” ÌW›” ÌY” ÌY” ÌY” ÌY”	 ÌY” ÌY” ÌY” ÌY” ÌY” ÌY!” ÌY#™” ÌZ” ÌZ” ÌZ”# ÌZ”$ ÌZ ”% ÌZ!”& ÌZ"”' ÌZ#”( ÌZ$”” Ì[” Ì[” Ì[” Ì[›” Ì]” Ì]” Ì]” Ì]”	 Ì]” Ì]” Ì]” Ì]” Ì]$”  Ì]&”" Ì](•” Ì^” Ì^” Ì^” Ì^” Ì^” Ì_” Ì_” Ì_” Ì_” Ì_”2 Ì_.”5 Ì_1”: Ì_6”= Ì_9”ÌE Ì_ÌA”ÌH Ì_ÌD”ÌO Ì_ÌK”ÌP Ì_ÌL”ÌQ Ì_ÌM”” Ì`” Ì`” Ì`” Ì`•” Ìb” Ìb
+” Ìb” Ìb” Ìb”” Ìc” Ìc	” Ìc
+” Ìc’”  Ìd ” Ìd””  Ìf ” Ìf” Ìf” Ìf”” Ìg” Ìg”	 Ìg” Ìg’” Ìg” Ìg’” Ìi” Ìi–” Ìj” Ìj” Ìj” Ìj”% Ìj!”' Ìj#—” Ìk” Ìk” Ìk” Ìk”  Ìk”" Ìk”# Ìk—” Ìl” Ìl” Ìl” Ìl” Ìl” Ìl” Ìl‘”	 Ìm‘” Ìn”” Ìn” Ìn” Ìn” Ìn’” Ìo” Ìo‘” Ìp’” Ìr” Ìr—” Ìs” Ìs
+” Ìs” Ìs” Ìs” Ìs” Ìs‘” Ìt”” Ìt” Ìt” Ìt” Ìt’” Ìu” Ìu‘” Ìv’” Ìx” Ìx—” Ìy” Ìy
+” Ìy” Ìy” Ìy”  Ìy”! Ìy‘” Ìz”” Ìz” Ìz” Ìz” Ìz’” Ì{” Ì{‘” Ì|•” Ì~” Ì~
+” Ì~” Ì~” Ì~•” Ì” Ì” Ì” Ì” Ì’”  Ì€ ” Ì€””  Ì‚ ” Ì‚” Ì‚”( Ì‚(•” Ìƒ”
+ Ìƒ” Ìƒ” Ìƒ” Ìƒ™” Ì„”
+ Ì„” Ì„” Ì„” Ì„” Ì„” Ì„” Ì„” Ì„–” Ì…” Ì…	” Ì…” Ì…” Ì…”  Ì…’”  Ì† ” Ì†˜”  Ìˆ ” Ìˆ” Ìˆ”  Ìˆ ”! Ìˆ!”$ Ìˆ,”& Ìˆ.”) Ìˆ9˜” Ì‰”
+ Ì‰” Ì‰	” Ì‰” Ì‰”- Ì‰+”/ Ì‰-”0 Ì‰.•” ÌŠ” ÌŠ” ÌŠ	” ÌŠ” ÌŠ’” ÌŠ” ÌŠš” ÌŒ” ÌŒ	” ÌŒ
+” ÌŒ” ÌŒ”1 ÌŒ/”4 ÌŒ2”7 ÌŒ5”8 ÌŒ6”9 ÌŒ7—” Ì” Ì” Ì”	 Ì” Ì
+” Ì” Ì—” Ì”
+ Ì” Ì” Ì” Ì” Ì” Ì•” Ì” Ì” Ì	” Ì” Ì’” Ì” Ì—” Ì’”
+ Ì’” Ì’	” Ì’
+” Ì’” Ì’” Ì’•” Ì“” Ì“” Ì“	” Ì“” Ì“’” Ì“” Ì“’” Ì•” Ì•’” Ì–” Ì–” Ì—” Ì—
+” Ì—” Ì—” Ì—”  Ì—”# Ì—”$ Ì—(”4 Ì—8”5 Ì—9”9 Ì—=”< Ì—Ì@”= Ì—ÌAœ” Ì˜” Ì˜
+” Ì˜” Ì˜” Ì˜” Ì˜”, Ì˜(”- Ì˜)”1 Ì˜-”2 Ì˜.”3 Ì˜/”4 Ì˜0‘” Ì™”” Ì™” Ì™” Ì™” Ì™’” Ìš” Ìš‘” Ì›—” Ì”
+ Ì” Ì	” Ì
+” Ì” Ì” Ì’”  Ì ” Ì“”  Ì  ”	 Ì 	” Ì ’” Ì¡”* Ì¡(–” Ì¢”
+ Ì¢” Ì¢” Ì¢” Ì¢” Ì¢Ü ” Ì£”	 Ì£” Ì£” Ì£” Ì£” Ì£” Ì£” Ì£” Ì£”! Ì£”" Ì£ ”( Ì£&”* Ì£(”+ Ì£)”- Ì£+”/ Ì£-” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤” Ì¤”  Ì¤”! Ì¤”" Ì¤‘” Ì¥š” Ì§” Ì§” Ì§” Ì§” Ì§#”+ Ì§3”- Ì§5”/ Ì§ÌC”0 Ì§ÌD”1 Ì§ÌEš” Ì¨” Ì¨” Ì¨” Ì¨” Ì¨”# Ì¨+”% Ì¨-”( Ì¨0”) Ì¨1”* Ì¨2š” Ìª” Ìª” Ìª” Ìª” Ìª!”+ Ìª1”- Ìª3”. Ìª4”/ Ìª5”0 Ìª6š” Ì«” Ì«” Ì«” Ì«” Ì«”# Ì«)”% Ì«+”. Ì«4”/ Ì«5”0 Ì«6’”  Ì¬ ” Ì¬’”  Ì® ”! Ì®!–”  Ì¯ ” Ì¯” Ì¯” Ì¯” Ì¯” Ì¯#—” Ì°” Ì°	” Ì°” Ì°” Ì°” Ì°” Ì°—” Ì±” Ì±
+” Ì±” Ì±” Ì±” Ì±” Ì±Ÿ” Ì³” Ì³” Ì³	” Ì³” Ì³” Ì³” Ì³” Ì³” Ì³”! Ì³”" Ì³”( Ì³$”- Ì³)”. Ì³*”0 Ì³,–” Ì´” Ì´” Ì´” Ì´”  Ì´”! Ì´–” Ìµ” Ìµ” Ìµ” Ìµ” Ìµ” Ìµ’” Ì¶” Ì¶‘”	 Ì·›” Ì¹” Ì¹
+” Ì¹” Ì¹”% Ì¹!”& Ì¹"”* Ì¹&”+ Ì¹'”. Ì¹*”/ Ì¹+”0 Ì¹,Ü ” Ì»” Ì»” Ì»” Ì»” Ì»”< Ì»8”? Ì»;”ÌC Ì»?”ÌD Ì»Ì@”ÌF Ì»ÌB”ÌI Ì»ÌE”ÌP Ì»ÌL”ÌS Ì»ÌO”Ì[ Ì»ÌW”Ì^ Ì»ÌZ”Ìf Ì»Ìb”Ìi Ì»Ìe”Ìl Ì»Ìh”Ìm Ì»Ìi”Ìn Ì»Ìj›” Ì½” Ì½” Ì½”' Ì½#”( Ì½$”, Ì½(”. Ì½*”6 Ì½2”7 Ì½3”8 Ì½4”9 Ì½5–” Ì¾” Ì¾” Ì¾” Ì¾” Ì¾” Ì¾–” Ì¿” Ì¿” Ì¿” Ì¿” Ì¿” Ì¿’” ÌÁ”. ÌÁ*˜” ÌÂ” ÌÂ” ÌÂ” ÌÂ” ÌÂ” ÌÂ”  ÌÂ”" ÌÂš” ÌÃ” ÌÃ” ÌÃ” ÌÃ” ÌÃ”* ÌÃ$”- ÌÃ'”1 ÌÃ+”2 ÌÃ,”3 ÌÃ-‘”	 ÌÄ–” ÌÆ” ÌÆ” ÌÆ” ÌÆ” ÌÆ” ÌÆ’” ÌÇ” ÌÇ’” ÌÈ” ÌÈ
+” ÌÉ” ÌÉ”& ÌÉ”' ÌÉ”4 ÌÉ,”5 ÌÉ-”ÌA ÌÉ9”ÌB ÌÉ:”ÌF ÌÉ>”ÌH ÌÉÌ@”ÌP ÌÉÌH”ÌQ ÌÉÌI”ÌR ÌÉÌJ”ÌS ÌÉÌK‘” ÌÊ”” ÌÊ” ÌÊ” ÌÊ” ÌÊ˜” ÌË” ÌË” ÌË” ÌË” ÌË”ÌH ÌËÌ@”ÌI ÌËÌA”ÌJ ÌËÌB‘” ÌÌ™” ÌÎ” ÌÎ”# ÌÎ”$ ÌÎ”, ÌÎ&”. ÌÎ(”1 ÌÎ+”2 ÌÎ,”3 ÌÎ-•” ÌĞ” ÌĞ
+” ÌĞ” ÌĞ” ÌĞ–” ÌĞ” ÌĞ%” ÌĞ&” ÌĞ*”  ÌĞ+”! ÌĞ,‘”	 ÌÑ”” ÌÑ” ÌÑ” ÌÑ” ÌÑ˜” ÌÒ” ÌÒ” ÌÒ” ÌÒ” ÌÒ”Ì@ ÌÒ:”ÌA ÌÒ;”ÌB ÌÒ<–” ÌÓ” ÌÓ” ÌÓ” ÌÓ” ÌÓ” ÌÓ‘”	 ÌÔ‘” ÌÔ•” ÌÕ” ÌÕ
+” ÌÕ” ÌÕ” ÌÕ–” ÌÕ” ÌÕ%” ÌÕ&”  ÌÕ+”! ÌÕ,”" ÌÕ-‘”	 ÌÖ”” Ì×” Ì×” Ì×” Ì×’”  ÌØ ” ÌØ’”  ÌÚ ”$ ÌÚ$””  ÌÛ ” ÌÛ” ÌÛ” ÌÛ—” ÌÜ” ÌÜ	” ÌÜ” ÌÜ” ÌÜ”# ÌÜ!”% ÌÜ#”” Ìİ” Ìİ” Ìİ	” Ìİ’” Ìİ” Ìİ’” ÌŞ” ÌŞ—” Ìß” Ìß” Ìß” Ìß”  Ìß”" Ìß”# Ìß–” Ìà” Ìà” Ìà” Ìà” Ìà” Ìà‘”	 Ìá”” Ìá” Ìá” Ìá” Ìá˜” Ìâ” Ìâ” Ìâ” Ìâ” Ìâ”= Ìâ7”> Ìâ8”? Ìâ9‘”	 Ìã”” Ìä” Ìä” Ìä” Ìä’”  Ìå ” Ìå””  Ìç ” Ìç” Ìç” Ìç—” Ìè” Ìè	” Ìè” Ìè” Ìè”# Ìè!”% Ìè#”” Ìé” Ìé” Ìé	” Ìé’” Ìé” Ìé’” Ìê” Ìê—” Ìë” Ìë” Ìë” Ìë” Ìë”! Ìë”" Ìë–” Ìì” Ìì” Ìì” Ìì” Ìì” Ìì‘”	 Ìí”” Ìí” Ìí” Ìí” Ìí˜” Ìî” Ìî” Ìî” Ìî” Ìî”> Ìî8”? Ìî9”Ì@ Ìî:–” Ìï” Ìï” Ìï” Ìï” Ìï” Ìï‘”	 Ìğ”” Ìñ” Ìñ” Ìñ” Ìñ’”  Ìò ” Ìò–”  Ìô ” Ìô” Ìô” Ìô” Ìô” Ìô!—” Ìõ” Ìõ	” Ìõ” Ìõ” Ìõ”# Ìõ!”% Ìõ#”” Ìö” Ìö” Ìö	” Ìö’” Ìö” ÌöÜ ” Ìø” Ìø” Ìø	” Ìø
+” Ìø” Ìø”( Ìø$”, Ìø(”7 Ìø3”< Ìø8”ÌE ÌøÌA”ÌI ÌøÌE”ÌT ÌøÌP”ÌY ÌøÌU”Ìa ÌøÌ]”Ìe ÌøÌa”Ìp ÌøÌl”Ìu ÌøÌq”Ì€ ÌøÌ|”Ì ÌøÌ}”Ìƒ ÌøÌš” Ìù” Ìù” Ìù” Ìù” Ìù”ÌF ÌùÌ@”ÌI ÌùÌC”ÌT ÌùÌN”ÌU ÌùÌO”ÌV ÌùÌP’” Ìú” Ìú‘”	 Ìû’” Ìı” Ìı™” Ìş” Ìş” Ìş” Ìş”$ Ìş”% Ìş”' Ìş!”( Ìş"”) Ìş#™” Ìÿ” Ìÿ” Ìÿ” Ìÿ” Ìÿ”  Ìÿ”! Ìÿ”" Ìÿ”# Ìÿ–” Í ” Í ” Í ” Í ” Í ” Í ‘”	 Í”” Í” Í” Í” Í˜” Í” Í” Í” Í” Í”< Í6”= Í7”> Í8‘”	 Í”” Í” Í” Í” Í’”  Í ” Í–”  Í ” Í” Í” Í” Í”% Í%›” Í”
+ Í” Í” Í”# Í!”$ Í"”' Í%”( Í/”; ÍÌB”< ÍÌC”= ÍÌD˜” Í	”
+ Í	” Í	” Í	”  Í	'”$ Í	+”) Í	0”* Í	1“” Í
+” Í
+” Í
+•” Í
+” Í
+” Í
+” Í
+” Í
+•” Í” Í” Í” Í” Í’”  Í ” Í–”  Í ” Í” Í” Í” Í”# Í)›” Í”
+ Í” Í” Í”! Í”" Í ”& Í$”' Í%”* Í(”+ Í)”, Í*” Í” Í	” Í” Í”* Í(”+ Í)”7 Í5”8 Í6”< Í:”> Í<”ÌF ÍÌD”ÌG ÍÌE”ÌH ÍÌF”ÌI ÍÌG’”  Í ” Í’”  Í ” Í˜”  Í ” Í” Í” Í” Í”" Í*”$ Í,”) Í9•” Í” Í” Í” Í” Í˜” Í” Í” Í” Í” Í” Í” Í”  Í•” Í” Í” Í” Í” Í‘” Í‘”	 Í	Ü ” Í” Í” Í” Í” Í” Í” Í” Í”  Í”$ Í ”% Í!”( Í$”) Í%”. Í*”0 Í,”9 Í5”: Í6”Ì@ Í<”ÌC Í?”ÌD ÍÌ@”ÌE ÍÌA”ÌF ÍÌB”ÌG ÍÌC‘” Í”” Í” Í” Í” Í’”  Í ” Í’”  Í ” Í””  Í ” Í” Í”" Í"–” Í ” Í 	” Í ” Í ” Í ” Í ’”  Í! ” Í!’”  Í# ” Í#’”  Í$ ”) Í$)–”  Í% ” Í%” Í%” Í%” Í%” Í%—” Í&” Í&” Í&” Í&” Í&” Í&” Í&’” Í&” Í&%•” Í(” Í(” Í(” Í(” Í(™” Í(” Í(” Í("” Í(+” Í(,”$ Í(2”' Í(5”( Í(6”) Í(7•” Í)” Í)” Í)” Í)” Í)”” Í+” Í+” Í+” Í+š” Í,”
+ Í,” Í,” Í,” Í,” Í,”& Í,$”' Í,%”( Í,&”) Í,'’”  Í- ” Í-–”  Í/ ” Í/” Í/” Í/” Í/” Í/—” Í0” Í0” Í0” Í0” Í0” Í0” Í0’” Í0” Í0%™” Í2” Í2” Í2” Í2” Í2” Í2”% Í2#”( Í2&”) Í2'•” Í2)” Í22” Í25” Í26” Í27•” Í3” Í3” Í3” Í3” Í3”” Í5” Í5” Í5” Í5š” Í6”
+ Í6” Í6” Í6” Í6” Í6”& Í6$”' Í6%”( Í6&”) Í6'’”  Í7 ” Í7’”  Í9 ”+ Í9+“”  Í: ”	 Í:	” Í:š” Í;” Í;” Í;” Í;” Í;!”+ Í;1”- Í;3”0 Í;6”1 Í;7”2 Í;8’”  Í< ” Í<•”  Í> ”	 Í>	” Í>” Í>”! Í>)•” Í?” Í?” Í?
+” Í?” Í?˜” Í?” Í?” Í?!” Í?"”" Í?/”# Í?0”7 Í?ÌD”8 Í?ÌE•” Í@” Í@” Í@
+” Í@” Í@˜” Í@” Í@” Í@!” Í@"”" Í@/”# Í@0”7 Í@ÌD”8 Í@ÌE•” ÍA” ÍA” ÍA
+” ÍA” ÍA˜” ÍA” ÍA” ÍA!” ÍA"”" ÍA/”# ÍA0”7 ÍAÌD”8 ÍAÌE•” ÍB” ÍB” ÍB
+” ÍB” ÍB˜” ÍB” ÍB” ÍB ” ÍB!”" ÍB.”# ÍB/”7 ÍBÌC”8 ÍBÌD˜” ÍC” ÍC	” ÍC” ÍC” ÍC” ÍC”3 ÍC1”4 ÍC2’”  ÍD ” ÍD–”  ÍF ” ÍF” ÍF” ÍF”  ÍF ”$ ÍF,”” ÍG” ÍG” ÍG” ÍG’” ÍI” ÍI—” ÍJ” ÍJ	” ÍJ” ÍJ” ÍJ”# ÍJ!”% ÍJ#š” ÍK” ÍK” ÍK” ÍK” ÍK”' ÍK+”) ÍK-”- ÍK1”. ÍK2”/ ÍK3”” ÍL” ÍL” ÍL	” ÍL’” ÍL” ÍL’” ÍN” ÍNœ” ÍO” ÍO” ÍO” ÍO”# ÍO”$ ÍO”7 ÍO1”8 ÍO2”< ÍO6”= ÍO7”> ÍO8”? ÍO9‘”	 ÍP”” ÍP” ÍP” ÍP” ÍP˜” ÍQ” ÍQ” ÍQ” ÍQ” ÍQ”ÌG ÍQÌA”ÌH ÍQÌB”ÌI ÍQÌC‘”	 ÍR”” ÍS” ÍS” ÍS” ÍS’”  ÍT ” ÍTÔrI–§version¤file§sources®sourcesContent¥names¨mappingsÀ‘À‘ÀÜ:‘”    ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”  	 ‘”  
+ ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”   ‘”    ‘”  ! ‘”  " ‘”  # ‘”  $ ‘”  % ‘”  & ‘”  ' ‘”  ( ‘”  ) ‘”  * ‘”  + ‘”  , ‘”  - ‘”  . ‘”  / ‘”  0 ‘”  1 ‘”  2 ‘”  3 ‘”  4 ‘”  5 ‘”  6 ‘”  7 ‘”  8 ‘”  9 ‘”  : ‘”  ; ‘”  < ‘”  = ‘”  > ‘”  ? ‘”  Ì@ ‘”  ÌA ‘”  ÌB ‘”  ÌC ‘”  ÌD ‘”  ÌE ‘”  ÌF ‘”  ÌG ‘”  ÌH ‘”  ÌI ‘”  ÌJ ‘”  ÌK ‘”  ÌL ‘”  ÌM ‘”  ÌN ‘”  ÌO ‘”  ÌP ‘”  ÌQ ‘”  ÌR ‘”  ÌS ‘”  ÌT ‘”  ÌU ‘”  ÌV ‘”  ÌW ‘”  ÌX ‘”  ÌY ‘”  ÌZ ‘”  Ì[ ‘”  Ì\ ‘”  Ì] ‘”  Ì^ ‘”  Ì_ ‘”  Ì` ‘”  Ìa ‘”  Ìb ‘”  Ìc ‘”  Ìd ‘”  Ìe ‘”  Ìf ‘”  Ìg ‘”  Ìh ‘”  Ìi ‘”  Ìj ‘”  Ìk ‘”  Ìl ‘”  Ìm ‘”  Ìn ‘”  Ìo ‘”  Ìp ‘”  Ìq ‘”  Ìr ‘”  Ìs ‘”  Ìt ‘”  Ìu ‘”  Ìv ‘”  Ìw ‘”  Ìx ‘”  Ìy ‘”  Ìz ‘”  Ì{ ‘”  Ì| ‘”  Ì} ‘”  Ì~ ‘”  Ì ‘”  Ì€ ‘”  Ì ‘”  Ì‚ ‘”  Ìƒ ‘”  Ì„ ‘”  Ì… ‘”  Ì† ‘”  Ì‡ ‘”  Ìˆ ‘”  Ì‰ ‘”  ÌŠ ‘”  Ì‹ ‘”  ÌŒ ‘”  Ì ‘”  Ì ‘”  Ì ‘”  Ì ‘”  Ì‘ ‘”  Ì’ ‘”  Ì“ ‘”  Ì” ‘”  Ì• ‘”  Ì– ‘”  Ì— ‘”  Ì˜ ‘”  Ì™ ‘”  Ìš ‘”  Ì› ‘”  Ìœ ‘”  Ì ‘”  Ì ‘”  ÌŸ ‘”  Ì  ‘”  Ì¡ ‘”  Ì¢ ‘”  Ì£ ‘”  Ì¤ ‘”  Ì¥ ‘”  Ì¦ ‘”  Ì§ ‘”  Ì¨ ‘”  Ì© ‘”  Ìª ‘”  Ì« ‘”  Ì¬ ‘”  Ì­ ‘”  Ì® ‘”  Ì¯ ‘”  Ì° ‘”  Ì± ‘”  Ì² ‘”  Ì³ ‘”  Ì´ ‘”  Ìµ ‘”  Ì¶ ‘”  Ì· ‘”  Ì¸ ‘”  Ì¹ ‘”  Ìº ‘”  Ì» ‘”  Ì¼ ‘”  Ì½ ‘”  Ì¾ ‘”  Ì¿ ‘”  ÌÀ ‘”  ÌÁ ‘”  ÌÂ ‘”  ÌÃ ‘”  ÌÄ ‘”  ÌÅ ‘”  ÌÆ ‘”  ÌÇ ‘”  ÌÈ ‘”  ÌÉ ‘”  ÌÊ ‘”  ÌË ‘”  ÌÌ ‘”  ÌÍ ‘”  ÌÎ ‘”  ÌÏ ‘”  ÌĞ ‘”  ÌÑ ‘”  ÌÒ ‘”  ÌÓ ‘”  ÌÔ ‘”  ÌÕ ‘”  ÌÖ ‘”  Ì× ‘”  ÌØ ‘”  ÌÙ ‘”  ÌÚ ‘”  ÌÛ ‘”  ÌÜ ‘”  Ìİ ‘”  ÌŞ ‘”  Ìß ‘”  Ìà ‘”  Ìá ‘”  Ìâ ‘”  Ìã ‘”  Ìä ‘”  Ìå ‘”  Ìæ ‘”  Ìç ‘”  Ìè ‘”  Ìé ‘”  Ìê ‘”  Ìë ‘”  Ìì ‘”  Ìí ‘”  Ìî ‘”  Ìï ‘”  Ìğ ‘”  Ìñ ‘”  Ìò ‘”  Ìó ‘”  Ìô ‘”  Ìõ ‘”  Ìö ‘”  Ì÷ ‘”  Ìø ‘”  Ìù ‘”  Ìú ‘”  Ìû ‘”  Ìü ‘”  Ìı ‘”  Ìş ‘”  Ìÿ ‘”  Í  ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í	 ‘”  Í
+ ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í ‘”  Í  ‘”  Í! ‘”  Í" ‘”  Í# ‘”  Í$ ‘”  Í% ‘”  Í& ‘”  Í' ‘”  Í( ‘”  Í) ‘”  Í* ‘”  Í+ ‘”  Í, ‘”  Í- ‘”  Í. ‘”  Í/ ‘”  Í0 ‘”  Í1 ‘”  Í2 ‘”  Í3 ‘”  Í4 ‘”  Í5 ‘”  Í6 ‘”  Í7 ‘”  Í8 ‘”  Í9 ÔrJ’§missing¦pluginÃ¦genAbcÂÔ  ÔrK”²dynamicImportCache¹exportAllDeclarationCache»exportNamedDeclarationCache«importCacheÔrL–¤type¥start£end«declarationªspecifiers¦source¶ExportNamedDeclarationÌÒÍÔrM•¤type¥start£end¬declarations¤kind³VariableDeclarationÌÙÍ‘ÔrN•¤type¥start£end¢id¤init²VariableDeclaratorÌßÍÔrO”¤type¥start£end¤nameªIdentifierÌßÌñ²PLAYER_LOADING_KEYÔrP•¤type¥start£end¥value£raw§LiteralÌôÍ±PLAYER_IS_LOADING³'PLAYER_IS_LOADING'¥constÀL¶ExportNamedDeclarationÍ
+Í=M³VariableDeclarationÍÍ=‘N²VariableDeclaratorÍÍ<OªIdentifierÍÍ'°PLAYER_QUEUE_KEYP§LiteralÍ*Í<°PLAYER_QUEUE_KEY²'PLAYER_QUEUE_KEY'¥constÀL¶ExportNamedDeclarationÍYÍŒM³VariableDeclarationÍ`ÍŒ‘N²VariableDeclaratorÍfÍ‹OªIdentifierÍfÍv°PLAYER_INDEX_KEYP§LiteralÍyÍ‹°PLAYER_INDEX_KEY²'PLAYER_INDEX_KEY'¥constÀL¶ExportNamedDeclarationÍİÍÔrQ™¤type¥start£end¢idªexpression©generator¥async¦params¤body³FunctionDeclarationÍäÍOªIdentifierÍíÍõ¨playSongÂÂÂ‘OªIdentifierÍöÍú¤songÔrR”¤type¥start£end¤body®BlockStatementÍüÍ‘ÔrS”¤type¥start£end¨argument¯ReturnStatementÍÍÔrT–¤type¥start£end¦callee©arguments¨optional®CallExpressionÍ
+ÍOªIdentifierÍ
+Í§enqueue‘Q·ArrowFunctionExpressionÍÍÀÂÂÃR®BlockStatementÍÍšM³VariableDeclarationÍ)Í?‘N²VariableDeclaratorÍ/Í>OªIdentifierÍ/Í2£seqÔrU–¤type¥start£end¨operator¦prefix¨argument°UpdateExpressionÍ5Í>¢++ÃOªIdentifierÍ7Í>§playSeq¥constÔrV–¤type¥start£end¤testªconsequent©alternate«IfStatementÍIÍÕÔrW–¤type¥start£end¤left¨operator¥right±LogicalExpressionÍMÍoU¯UnaryExpressionÍMÍV¡!ÃÔrX—¤type¥start£end¦object¨property¨computed¨optional°MemberExpressionÍNÍVOªIdentifierÍNÍR¤songOªIdentifierÍSÍV£urlÂÂ¢||W°BinaryExpressionÍZÍoX°MemberExpressionÍZÍiX°MemberExpressionÍZÍbOªIdentifierÍZÍ^¤songOªIdentifierÍ_Íb£urlÂÂOªIdentifierÍcÍi¦lengthÂÂ£===P§LiteralÍnÍo ¡0R®BlockStatementÍqÍÕ“ÔrY”¤type¥start£endªexpression³ExpressionStatementÍ€Í•T®CallExpressionÍ€Í”OªIdentifierÍ€Í®setCurrentSong‘OªIdentifierÍÍ“¤songÂY³ExpressionStatementÍ£ÍµT®CallExpressionÍ£Í´OªIdentifierÍ£Í­ªsetPlaying‘P§LiteralÍ®Í³Â¥falseÂS¯ReturnStatementÍÃÍÊÀÀM³VariableDeclarationÍßÍ‘N²VariableDeclaratorÍåÍOªIdentifierÍåÍí¨finalUrlT®CallExpressionÍğÍOªIdentifierÍğÍü¬normalizeUrl‘X°MemberExpressionÍıÍOªIdentifierÍıÍ¤songOªIdentifierÍÍ£urlÂÂÂ¥constY³ExpressionStatementÍÍwT®CallExpressionÍÍvX°MemberExpressionÍÍOªIdentifierÍÍ§consoleOªIdentifierÍÍ¤infoÂÂ‘W°BinaryExpressionÍÍuW°BinaryExpressionÍÍoW°BinaryExpressionÍÍdW°BinaryExpressionÍÍYW°BinaryExpressionÍÍOP§LiteralÍÍEÙ%[AudioPlayerService] playSong songId=Ù''[AudioPlayerService] playSong songId='¡+X°MemberExpressionÍHÍOOªIdentifierÍHÍL¤songOªIdentifierÍMÍO¢idÂÂ¡+P§LiteralÍRÍY¥ url=§' url='¡+OªIdentifierÍ\Íd¨finalUrl¡+P§LiteralÍgÍo¦, seq=¨', seq='¡+OªIdentifierÍrÍu£seqÂY³ExpressionStatementÍÍ²T®CallExpressionÍÍ±OªIdentifierÍÍ®setCurrentSong‘T®CallExpressionÍÍ°OªIdentifierÍÍ °buildSongWithUrl’OªIdentifierÍ¡Í¥¤songOªIdentifierÍ§Í¯¨finalUrlÂÂY³ExpressionStatementÍ¼ÍÍT®CallExpressionÍ¼ÍÌOªIdentifierÍ¼ÍÉ­setPositionMs‘P§LiteralÍÊÍË ¡0ÂY³ExpressionStatementÍ×ÍèT®CallExpressionÍ×ÍçOªIdentifierÍ×Íä­setDurationMs‘P§LiteralÍåÍæ ¡0ÂV«IfStatementÍ"Í}W°BinaryExpressionÍ&Í:X°MemberExpressionÍ&Í6OªIdentifierÍ&Í*¤songOªIdentifierÍ+Í6«durationSecÂÂ¡>P§LiteralÍ9Í: ¡0R®BlockStatementÍ<Í}‘Y³ExpressionStatementÍKÍrT®CallExpressionÍKÍqOªIdentifierÍKÍX­setDurationMs‘W°BinaryExpressionÍYÍpX°MemberExpressionÍYÍiOªIdentifierÍYÍ]¤songOªIdentifierÍ^Íi«durationSecÂÂ¡*P§LiteralÍlÍpÍè¤1000ÂÀY³ExpressionStatementÍ‡Í˜T®CallExpressionÍ‡Í—OªIdentifierÍ‡Í‘ªsetLoading‘P§LiteralÍ’Í–Ã¤trueÂÔrZ–¤type¥start£end¥block§handler©finalizer¬TryStatementÍ¢ÍÿR®BlockStatementÍ¦Í“Z¬TryStatementÍµÍ’R®BlockStatementÍ¹Í‘Y³ExpressionStatementÍÌÍS¯AwaitExpressionÍÌÍT®CallExpressionÍÒÍX°MemberExpressionÍÒÍğOªIdentifierÍÒÍâ°PreferencesStoreOªIdentifierÍãÍğ­addRecentSongÂÂ‘T®CallExpressionÍñÍOªIdentifierÍñÍı¬toStoredSong’OªIdentifierÍşÍ¤songOªIdentifierÍÍ¨finalUrlÂÂÔr[•¤type¥start£end¥param¤body«CatchClauseÍ,Í’OªIdentifierÍ3Í4¡_R®BlockStatementÍ6Í’‘Y³ExpressionStatementÍIÍƒT®CallExpressionÍIÍ‚X°MemberExpressionÍIÍVOªIdentifierÍIÍP§consoleOªIdentifierÍQÍV¥errorÂÂ‘P§LiteralÍWÍÙ([AudioPlayerService] addRecentSong errorÙ*'[AudioPlayerService] addRecentSong error'ÂÀY³ExpressionStatementÍ ÍÇS¯AwaitExpressionÍ ÍÆT®CallExpressionÍ¦ÍÆOªIdentifierÍ¦Í·±playOnFreshPlayer’OªIdentifierÍ¸ÍÀ¨finalUrlOªIdentifierÍÂÍÅ£seqÂV«IfStatementÍÕÍW°BinaryExpressionÍÙÍèOªIdentifierÍÙÍÜ£seq£===OªIdentifierÍáÍè§playSeqY³ExpressionStatementÍûÍT®CallExpressionÍûÍOªIdentifierÍûÍªsetPlaying‘P§LiteralÍÍ
+Ã¤trueÂÀ[«CatchClauseÍ!Í›OªIdentifierÍ(Í)¡_R®BlockStatementÍ+Í›’Y³ExpressionStatementÍ:ÍpT®CallExpressionÍ:ÍoX°MemberExpressionÍ:ÍGOªIdentifierÍ:ÍA§consoleOªIdentifierÍBÍG¥errorÂÂ‘P§LiteralÍHÍnÙ$[AudioPlayerService] playSong failedÙ&'[AudioPlayerService] playSong failed'ÂY³ExpressionStatementÍ~ÍT®CallExpressionÍ~ÍOªIdentifierÍ~ÍˆªsetPlaying‘P§LiteralÍ‰ÍÂ¥falseÂR®BlockStatementÍ­Íÿ‘V«IfStatementÍ¼ÍôW°BinaryExpressionÍÀÍÏOªIdentifierÍÀÍÃ£seq£===OªIdentifierÍÈÍÏ§playSeqY³ExpressionStatementÍâÍôT®CallExpressionÍâÍóOªIdentifierÍâÍìªsetLoading‘P§LiteralÍíÍòÂ¥falseÂÀÂÀL¶ExportNamedDeclarationÍ3ÍnQ³FunctionDeclarationÍ:ÍnOªIdentifierÍCÍH¥pauseÂÂÂR®BlockStatementÍKÍn‘S¯ReturnStatementÍRÍkT®CallExpressionÍYÍjOªIdentifierÍYÍg®enqueueControl‘Q·ArrowFunctionExpressionÍhÍiÀÂÂÃR®BlockStatementÍtÍi’V«IfStatementÍÍ¢U¯UnaryExpressionÍƒÍŒ¡!ÃOªIdentifierÍ„ÍŒ¨avPlayerS¯ReturnStatementÍ›Í¢ÀÀZ¬TryStatementÍ¬ÍbR®BlockStatementÍ°Í’Y³ExpressionStatementÍ¿ÍÖS¯AwaitExpressionÍ¿ÍÕT®CallExpressionÍÅÍÕX°MemberExpressionÍÅÍÓOªIdentifierÍÅÍÍ¨avPlayerOªIdentifierÍÎÍÓ¥pauseÂÂÂY³ExpressionStatementÍäÍöT®CallExpressionÍäÍõOªIdentifierÍäÍîªsetPlaying‘P§LiteralÍïÍôÂ¥falseÂ[«CatchClauseÍÍbOªIdentifierÍÍ¡_R®BlockStatementÍÍb‘Y³ExpressionStatementÍ$ÍWT®CallExpressionÍ$ÍVX°MemberExpressionÍ$Í1OªIdentifierÍ$Í+§consoleOªIdentifierÍ,Í1¥errorÂÂ‘P§LiteralÍ2ÍUÙ![AudioPlayerService] pause failedÙ#'[AudioPlayerService] pause failed'ÂÀÂÀL¶ExportNamedDeclarationÍpÍËQ³FunctionDeclarationÍwÍËOªIdentifierÍ€Í†¦resumeÂÂÂR®BlockStatementÍ‰ÍË‘S¯ReturnStatementÍÍÈT®CallExpressionÍ—ÍÇOªIdentifierÍ—Í¥®enqueueControl‘Q·ArrowFunctionExpressionÍ¦ÍÆÀÂÂÃR®BlockStatementÍ²ÍÆ’V«IfStatementÍ½ÍàU¯UnaryExpressionÍÁÍÊ¡!ÃOªIdentifierÍÂÍÊ¨avPlayerS¯ReturnStatementÍÙÍàÀÀZ¬TryStatementÍêÍ¿R®BlockStatementÍîÍ=’Y³ExpressionStatementÍıÍS¯AwaitExpressionÍıÍT®CallExpressionÍÍX°MemberExpressionÍÍOªIdentifierÍÍ¨avPlayerOªIdentifierÍÍ¤playÂÂÂY³ExpressionStatementÍ!Í2T®CallExpressionÍ!Í1OªIdentifierÍ!Í+ªsetPlaying‘P§LiteralÍ,Í0Ã¤trueÂ[«CatchClauseÍGÍ¿OªIdentifierÍNÍO¡_R®BlockStatementÍQÍ¿’Y³ExpressionStatementÍ`Í”T®CallExpressionÍ`Í“X°MemberExpressionÍ`ÍmOªIdentifierÍ`Íg§consoleOªIdentifierÍhÍm¥errorÂÂ‘P§LiteralÍnÍ’Ù"[AudioPlayerService] resume failedÙ$'[AudioPlayerService] resume failed'ÂY³ExpressionStatementÍ¢Í´T®CallExpressionÍ¢Í³OªIdentifierÍ¢Í¬ªsetPlaying‘P§LiteralÍ­Í²Â¥falseÂÀÂÀL¶ExportNamedDeclarationÍÍÍ3Q³FunctionDeclarationÍÔÍ3OªIdentifierÍİÍã¦seekToÂÂÂ‘OªIdentifierÍäÍæ¢msR®BlockStatementÍèÍ3‘S¯ReturnStatementÍïÍ0T®CallExpressionÍöÍ/OªIdentifierÍöÍ®enqueueControl‘Q·ArrowFunctionExpressionÍÍ.ÀÂÂÃR®BlockStatementÍÍ.“V«IfStatementÍÍ?U¯UnaryExpressionÍ Í)¡!ÃOªIdentifierÍ!Í)¨avPlayerS¯ReturnStatementÍ8Í?ÀÀV«IfStatementÍIÍ=U¯UnaryExpressionÍMÍÂ¡!ÃW±LogicalExpressionÍOÍÁW±LogicalExpressionÍOÍ¢W±LogicalExpressionÍOÍ†W°BinaryExpressionÍOÍiOªIdentifierÍOÍZ«playerState£===P§LiteralÍ_Íi¨preparedª'prepared'¢||W°BinaryExpressionÍmÍ†OªIdentifierÍmÍx«playerState£===P§LiteralÍ}Í†§playing©'playing'¢||W°BinaryExpressionÍŠÍ¢OªIdentifierÍŠÍ•«playerState£===P§LiteralÍšÍ¢¦paused¨'paused'¢||W°BinaryExpressionÍ¦ÍÁOªIdentifierÍ¦Í±«playerState£===P§LiteralÍ¶ÍÁ©completed«'completed'R®BlockStatementÍÄÍ=’Y³ExpressionStatementÍÓÍT®CallExpressionÍÓÍX°MemberExpressionÍÓÍßOªIdentifierÍÓÍÚ§consoleOªIdentifierÍÛÍß¤warnÂÂ‘W°BinaryExpressionÍàÍP§LiteralÍàÍÙ+[AudioPlayerService] seek ignored in state=Ù-'[AudioPlayerService] seek ignored in state='¡+OªIdentifierÍÍ«playerStateÂS¯ReturnStatementÍ+Í2ÀÀZ¬TryStatementÍGÍ'R®BlockStatementÍKÍÇ“M³VariableDeclarationÍZÍw‘N²VariableDeclaratorÍ`ÍvOªIdentifierÍ`Ía¡vT®CallExpressionÍdÍvOªIdentifierÍdÍr®msToPlayerUnit‘OªIdentifierÍsÍu¢msÂ¥constY³ExpressionStatementÍ…ÍœS¯AwaitExpressionÍ…Í›T®CallExpressionÍ‹Í›X°MemberExpressionÍ‹Í˜OªIdentifierÍ‹Í“¨avPlayerOªIdentifierÍ”Í˜¤seekÂÂ‘OªIdentifierÍ™Íš¡vÂY³ExpressionStatementÍªÍ¼T®CallExpressionÍªÍ»OªIdentifierÍªÍ·­setPositionMs‘OªIdentifierÍ¸Íº¢msÂ[«CatchClauseÍÑÍ'OªIdentifierÍØÍÙ¡_R®BlockStatementÍÛÍ'‘Y³ExpressionStatementÍêÍT®CallExpressionÍêÍX°MemberExpressionÍêÍ÷OªIdentifierÍêÍñ§consoleOªIdentifierÍòÍ÷¥errorÂÂ‘P§LiteralÍøÍÙ [AudioPlayerService] seek failedÙ"'[AudioPlayerService] seek failed'ÂÀÂÀL¶ExportNamedDeclarationÍ5ÍQ³FunctionDeclarationÍ<ÍOªIdentifierÍKÍZ¯togglePlayPauseÂÂÃR®BlockStatementÍ]Í“M³VariableDeclarationÍdÍ‘N²VariableDeclaratorÍjÍœOªIdentifierÍjÍv¬playingValueT®CallExpressionÍyÍœX°MemberExpressionÍyÍ‡OªIdentifierÍyÍƒªAppStorageOªIdentifierÍ„Í‡£GetÂÂ‘P§LiteralÍˆÍ›±PLAYER_IS_PLAYING³'PLAYER_IS_PLAYING'Â¥constM³VariableDeclarationÍ£ÍÉ‘N²VariableDeclaratorÍ©ÍÈOªIdentifierÍ©Í°§playingW±LogicalExpressionÍ³ÍÈOªIdentifierÍ³Í¿¬playingValue¢??P§LiteralÍÃÍÈÂ¥false¥constV«IfStatementÍÏÍOªIdentifierÍÓÍÚ§playingY³ExpressionStatementÍåÍóS¯AwaitExpressionÍåÍòT®CallExpressionÍëÍòOªIdentifierÍëÍğ¥pauseÂY³ExpressionStatementÍÍS¯AwaitExpressionÍÍT®CallExpressionÍÍOªIdentifierÍÍ¦resumeÂÀL¶ExportNamedDeclarationÍÍ½Q³FunctionDeclarationÍ"Í½OªIdentifierÍ+Í9®toggleFavoriteÂÂÂ‘OªIdentifierÍ:Í>¤songR®BlockStatementÍ@Í½’M³VariableDeclarationÍGÍo‘N²VariableDeclaratorÍMÍnOªIdentifierÍMÍU¨fixedUrlT®CallExpressionÍXÍnOªIdentifierÍXÍd¬normalizeUrl‘X°MemberExpressionÍeÍmOªIdentifierÍeÍi¤songOªIdentifierÍjÍm£urlÂÂÂ¥constS¯ReturnStatementÍuÍºT®CallExpressionÍ|Í¹X°MemberExpressionÍ|Í›OªIdentifierÍ|ÍŒ°PreferencesStoreOªIdentifierÍÍ›®toggleFavoriteÂÂ‘T®CallExpressionÍœÍ¸OªIdentifierÍœÍ¨¬toStoredSong’OªIdentifierÍ©Í­¤songOªIdentifierÍ¯Í·¨fixedUrlÂÂÀL¶ExportNamedDeclarationÍàÍãQ³FunctionDeclarationÍçÍãOªIdentifierÍğÍü¬setPlayQueueÂÂÂ’OªIdentifierÍıÍ¥queueOªIdentifierÍÍ	¥indexR®BlockStatementÍÍã“Y³ExpressionStatementÍÍ$Ôr\–¤type¥start£end¨operator¤left¥right´AssignmentExpressionÍÍ#¡=OªIdentifierÍÍ©playQueueOªIdentifierÍÍ#¥queueV«IfStatementÍ*ÍÂW°BinaryExpressionÍ.ÍDX°MemberExpressionÍ.Í>OªIdentifierÍ.Í7©playQueueOªIdentifierÍ8Í>¦lengthÂÂ£===P§LiteralÍCÍD ¡0R®BlockStatementÍFÍf‘Y³ExpressionStatementÍQÍ_\´AssignmentExpressionÍQÍ^¡=OªIdentifierÍQÍZ©playIndexP§LiteralÍ]Í^ ¡0R®BlockStatementÍqÍÂ‘Y³ExpressionStatementÍ|Í»\´AssignmentExpressionÍ|Íº¡=OªIdentifierÍ|Í…©playIndexT®CallExpressionÍˆÍºX°MemberExpressionÍˆÍOªIdentifierÍˆÍŒ¤MathOªIdentifierÍÍ£maxÂÂ’P§LiteralÍ‘Í’ ¡0T®CallExpressionÍ”Í¹X°MemberExpressionÍ”ÍœOªIdentifierÍ”Í˜¤MathOªIdentifierÍ™Íœ£minÂÂ’OªIdentifierÍÍ¢¥indexW°BinaryExpressionÍ¤Í¸X°MemberExpressionÍ¤Í´OªIdentifierÍ¤Í­©playQueueOªIdentifierÍ®Í´¦lengthÂÂ¡-P§LiteralÍ·Í¸¡1ÂÂY³ExpressionStatementÍÈÍàT®CallExpressionÍÈÍßOªIdentifierÍÈÍİµsyncQueueToAppStorageÂÀL¶ExportNamedDeclarationÍ ÍGQ³FunctionDeclarationÍÍGOªIdentifierÍÍ"²getPlayQueueLengthÂÂÂR®BlockStatementÍ%ÍG‘S¯ReturnStatementÍ,ÍDX°MemberExpressionÍ3ÍCOªIdentifierÍ3Í<©playQueueOªIdentifierÍ=ÍC¦lengthÂÂÀL¶ExportNamedDeclarationÍÍ•Q³FunctionDeclarationÍ•Í•OªIdentifierÍ¤Í¬¨playPrevÂÂÃR®BlockStatementÍ¯Í•”V«IfStatementÍ¶ÍâW°BinaryExpressionÍºÍĞX°MemberExpressionÍºÍÊOªIdentifierÍºÍÃ©playQueueOªIdentifierÍÄÍÊ¦lengthÂÂ£===P§LiteralÍÏÍĞ ¡0S¯ReturnStatementÍÛÍâÀÀV«IfStatementÍèÍIW°BinaryExpressionÍìÍúOªIdentifierÍìÍõ©playIndex¢<=P§LiteralÍùÍú ¡0Y³ExpressionStatementÍÍ&\´AssignmentExpressionÍÍ%¡=OªIdentifierÍÍ©playIndexW°BinaryExpressionÍÍ%X°MemberExpressionÍÍ!OªIdentifierÍÍ©playQueueOªIdentifierÍÍ!¦lengthÂÂ¡-P§LiteralÍ$Í%¡1Y³ExpressionStatementÍ:ÍI\´AssignmentExpressionÍ:ÍH¢-=OªIdentifierÍ:ÍC©playIndexP§LiteralÍGÍH¡1Y³ExpressionStatementÍOÍgT®CallExpressionÍOÍfOªIdentifierÍOÍdµsyncQueueToAppStorageÂY³ExpressionStatementÍmÍ’S¯AwaitExpressionÍmÍ‘T®CallExpressionÍsÍ‘OªIdentifierÍsÍ{¨playSong‘X°MemberExpressionÍ|ÍOªIdentifierÍ|Í…©playQueueOªIdentifierÍ†Í©playIndexÃÂÂÀL¶ExportNamedDeclarationÍ—Í Q³FunctionDeclarationÍÍ OªIdentifierÍ­Íµ¨playNextÂÂÃR®BlockStatementÍ¸Í ”V«IfStatementÍ¿ÍëW°BinaryExpressionÍÃÍÙX°MemberExpressionÍÃÍÓOªIdentifierÍÃÍÌ©playQueueOªIdentifierÍÍÍÓ¦lengthÂÂ£===P§LiteralÍØÍÙ ¡0S¯ReturnStatementÍäÍëÀÀV«IfStatementÍñÍ RW°BinaryExpressionÍõÍ OªIdentifierÍõÍş©playIndex¢>=W°BinaryExpressionÍ Í X°MemberExpressionÍ Í OªIdentifierÍ Í ©playQueueOªIdentifierÍ Í ¦lengthÂÂ¡-P§LiteralÍ Í ¡1Y³ExpressionStatementÍ !Í /\´AssignmentExpressionÍ !Í .¡=OªIdentifierÍ !Í *©playIndexP§LiteralÍ -Í . ¡0Y³ExpressionStatementÍ CÍ R\´AssignmentExpressionÍ CÍ Q¢+=OªIdentifierÍ CÍ L©playIndexP§LiteralÍ PÍ Q¡1Y³ExpressionStatementÍ XÍ pT®CallExpressionÍ XÍ oOªIdentifierÍ XÍ mµsyncQueueToAppStorageÂY³ExpressionStatementÍ vÍ ›S¯AwaitExpressionÍ vÍ šT®CallExpressionÍ |Í šOªIdentifierÍ |Í „¨playSong‘X°MemberExpressionÍ …Í ™OªIdentifierÍ …Í ©playQueueOªIdentifierÍ Í ˜©playIndexÃÂÂÀL¶ExportNamedDeclarationÍ"ÎÍ$‹Q³FunctionDeclarationÍ"ÕÍ$‹OªIdentifierÍ"ŞÍ"í¯setPlaybackRateÂÂÂ‘OªIdentifierÍ"îÍ"ò¤rateR®BlockStatementÍ"ôÍ$‹’Y³ExpressionStatementÍ"ûÍ#T®CallExpressionÍ"ûÍ#OªIdentifierÍ"ûÍ#µensureSpeedKeyCreatedÂS¯ReturnStatementÍ#8Í$ˆT®CallExpressionÍ#?Í$‡OªIdentifierÍ#?Í#M®enqueueControl‘Q·ArrowFunctionExpressionÍ#NÍ$†ÀÂÂÃR®BlockStatementÍ#ZÍ$†“Y³ExpressionStatementÍ#eÍ#ŒT®CallExpressionÍ#eÍ#‹X°MemberExpressionÍ#eÍ#sOªIdentifierÍ#eÍ#oªAppStorageOªIdentifierÍ#pÍ#s£SetÂÂ’OªIdentifierÍ#tÍ#„°PLAYER_SPEED_KEYOªIdentifierÍ#†Í#Š¤rateÂV«IfStatementÍ#–Í#¹U¯UnaryExpressionÍ#šÍ#£¡!ÃOªIdentifierÍ#›Í#£¨avPlayerS¯ReturnStatementÍ#²Í#¹ÀÀZ¬TryStatementÍ#ÃÍ$R®BlockStatementÍ#ÇÍ$‘Y³ExpressionStatementÍ#ÖÍ$	S¯AwaitExpressionÍ#ÖÍ$T®CallExpressionÍ#ÜÍ$X°MemberExpressionÍ#ÜÍ#íOªIdentifierÍ#ÜÍ#ä¨avPlayerOªIdentifierÍ#åÍ#í¨setSpeedÂÂ‘T®CallExpressionÍ#îÍ$OªIdentifierÍ#îÍ$³rateToPlaybackSpeed‘OªIdentifierÍ$Í$¤rateÂÂ[«CatchClauseÍ$Í$OªIdentifierÍ$%Í$&¡_R®BlockStatementÍ$(Í$‘Y³ExpressionStatementÍ$7Í$tT®CallExpressionÍ$7Í$sX°MemberExpressionÍ$7Í$DOªIdentifierÍ$7Í$>§consoleOªIdentifierÍ$?Í$D¥errorÂÂ‘P§LiteralÍ$EÍ$rÙ+[AudioPlayerService] setPlaybackRate failedÙ-'[AudioPlayerService] setPlaybackRate failed'ÂÀÂÀ“Ôr]•¤type¥start£endªspecifiers¦source±ImportDeclaration +‘Ôr^”¤type¥start£end¥local¶ImportDefaultSpecifierOªIdentifier¥mediaP§Literal*¶@ohos.multimedia.media¸'@ohos.multimedia.media']±ImportDeclaration-Ì˜•Ôr_•¤type¥start£end¨imported¥local¯ImportSpecifier6ÌDOªIdentifier6ÌD®setCurrentSongOªIdentifier6ÌD®setCurrentSong_¯ImportSpecifierÌFÌPOªIdentifierÌFÌPªsetPlayingOªIdentifierÌFÌPªsetPlaying_¯ImportSpecifierÌRÌ_OªIdentifierÌRÌ_­setPositionMsOªIdentifierÌRÌ_­setPositionMs_¯ImportSpecifierÌaÌnOªIdentifierÌaÌn­setDurationMsOªIdentifierÌaÌn­setDurationMs_¯ImportSpecifierÌpÌ€OªIdentifierÌpÌ€°PLAYER_SPEED_KEYOªIdentifierÌpÌ€°PLAYER_SPEED_KEYP§LiteralÌˆÌ—­./PlayerState¯'./PlayerState']±ImportDeclarationÌšÌĞ‘_¯ImportSpecifierÌ£Ì³OªIdentifierÌ£Ì³°PreferencesStoreOªIdentifierÌ£Ì³°PreferencesStoreP§LiteralÌ»ÌÏ²./PreferencesStore´'./PreferencesStore'
